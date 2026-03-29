@@ -1,0 +1,18 @@
+{
+  "_comment": "Maps each skill to the capability it requires. 'safe' skills never prompt for permission.",
+  "think": "safe",
+  "ask_user": "safe",
+  "task_done": "safe",
+  "memory_search": "safe",
+  "schedule_setup": "safe",
+  "schedule_task": "safe",
+  "visualize__read_me": "safe",
+  "visualize__show_widget": "safe",
+  "send_message": "safe",
+  "notify_user": "safe",
+  "web_fetch": "network",
+  "file_read": "filesystem_read",
+  "file_search": "filesystem_read",
+  "file_write": "filesystem_write",
+  "shell_exec": "shell"
+}

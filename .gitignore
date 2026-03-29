@@ -1,0 +1,15 @@
+node_modules
+dist
+build
+.env
+.env.local
+*.log
+client/dist
+server/dist
+server/data
+.DS_Store
+Thumbs.db
+*.xml
+*.py
+*.sh
+*.txt

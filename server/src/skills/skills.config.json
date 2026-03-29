@@ -1,0 +1,29 @@
+{
+  "_comment": "List skill names exactly as they appear in *.skill.js files. chat gets a small subset; task gets the full agent toolkit.",
+  "chat": [
+    "think",
+    "ask_user",
+    "web_fetch",
+    "file_read",
+    "file_write",
+    "file_search",
+    "shell_exec",
+    "task_done",
+    "memory_search",
+    "visualize__read_me",
+    "visualize__show_widget"
+  ],
+  "task": [
+    "think",
+    "ask_user",
+    "web_fetch",
+    "file_read",
+    "file_write",
+    "file_search",
+    "shell_exec",
+    "task_done",
+    "memory_search",
+    "visualize__read_me",
+    "visualize__show_widget"
+  ]
+}
