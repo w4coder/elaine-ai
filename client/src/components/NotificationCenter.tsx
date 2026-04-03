@@ -116,7 +116,9 @@ export function NotificationCenter() {
                     </span>
                   </div>
                   {n.body && (
-                    <p className="text-xs text-[var(--text-soft)] leading-relaxed pl-3.5">{n.body}</p>
+                    <p className="text-xs text-[var(--text-soft)] leading-relaxed pl-3.5">
+                      {n.body}
+                    </p>
                   )}
                   <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)] mt-0.5 pl-3.5">
                     <Clock size={9} />

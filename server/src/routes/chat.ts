@@ -18,12 +18,11 @@ import type { IntentResult } from "../classifier/intentClassifier.js";
 import { getToolsForIntent } from "../skills/skillsConfig.js";
 import { getToolDefinitions } from "../skills/skillRegistry.js";
 import { conversationEvents } from "../services/conversation-events.js";
+import { createConversationSearchFn, createMemorySearchFn } from "../services/search.js";
 import { TitleService } from "../services/title-service.js";
 import { createEphemeralSse, createSse } from "../utils/sse.js";
 import { AGENT_TASK_SYSTEM_PROMPT, SCHEDULE_SYSTEM_PROMPT } from "../utils/constants.js";
 import type { VisualizerWidget } from "../types.js";
-import type { MemoryNoteRow } from "../memory/types.js";
-import { getActiveNotes } from "../memory/memoryDb.js";
 
 type ContentBlock =
   | { type: "text"; content: string }
@@ -89,40 +88,6 @@ export interface ChatRoutesOptions {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function createMemorySearchFn() {
-  return function (query: string, limit = 5) {
-    const notes = getActiveNotes(LOCAL_USER, 200);
-    const queryLower = query.toLowerCase();
-
-    const scored = notes.map((note: MemoryNoteRow) => {
-      let score = note.salience * 0.3;
-
-      if (note.summary.toLowerCase().includes(queryLower)) score += 0.5;
-
-      const words = queryLower.split(/\s+/).filter((w) => w.length > 3);
-      for (const w of words) {
-        if (note.summary.toLowerCase().includes(w)) score += 0.05;
-      }
-
-      const days = (Date.now() - new Date(note.updated_at).getTime()) / 86_400_000;
-      score += Math.exp(-days / 30) * 0.2;
-
-      return { note, score };
-    });
-
-    return scored
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit)
-      .map(({ note }) => ({
-        kind: note.kind,
-        summary: note.summary,
-        confidence: note.confidence,
-        scope: note.scope,
-        entities: [] as string[],
-      }));
-  };
-}
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
@@ -255,7 +220,8 @@ export async function chatRoutes(app: FastifyInstance, opts: ChatRoutesOptions):
         conversationType: isScheduleConversation ? "schedule" : undefined,
         tools,
         memoryContext,
-        memorySearchFn: createMemorySearchFn(),
+        memorySearchFn: createMemorySearchFn(LOCAL_USER),
+        conversationSearchFn: createConversationSearchFn(),
         agentMode: effectiveIntentForTools,
         agentSystemPrompt: isScheduleConversation
           ? SCHEDULE_SYSTEM_PROMPT

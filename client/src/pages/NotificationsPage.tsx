@@ -1,13 +1,4 @@
-import {
-  ArrowLeft,
-  Bell,
-  BellOff,
-  Check,
-  Clock,
-  ExternalLink,
-  Trash2,
-  X,
-} from "lucide-react";
+import { ArrowLeft, Bell, BellOff, Check, Clock, ExternalLink, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
@@ -39,13 +30,42 @@ const TYPE_COLOR: Record<string, string> = {
   schedule_completed: "#4ade80",
   schedule_started: "#a78bfa",
   schedule_failed: "#f87171",
+  channel_permission_request: "#f59e0b",
 };
 
 const TYPE_LABEL: Record<string, string> = {
   schedule_completed: "Completed",
   schedule_started: "Started",
   schedule_failed: "Failed",
+  channel_permission_request: "Approval",
 };
+
+function getChannelPermissionMetadata(notification: AppNotification): {
+  connectionId: string;
+  channelId: import("../lib/types").ChannelId;
+  senderId: string;
+  senderName: string | null;
+} | null {
+  if (notification.type !== "channel_permission_request" || !notification.metadata) {
+    return null;
+  }
+
+  const metadata = notification.metadata;
+  if (
+    typeof metadata.connectionId !== "string" ||
+    typeof metadata.channelId !== "string" ||
+    typeof metadata.senderId !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    connectionId: metadata.connectionId,
+    channelId: metadata.channelId as import("../lib/types").ChannelId,
+    senderId: metadata.senderId,
+    senderName: typeof metadata.senderName === "string" ? metadata.senderName : null,
+  };
+}
 
 // ─── Notification detail panel ────────────────────────────────────────────────
 
@@ -60,19 +80,24 @@ function DetailPanel({ id, onBack }: DetailPanelProps) {
 
   useEffect(() => {
     setNotification(undefined);
-    void api.getNotification(id).then((n) => {
-      setNotification(n);
-      if (!n.read) {
-        notificationStore.markRead(n.id);
-        setNotification({ ...n, read: true });
-      }
-    }).catch(() => setNotification(null));
+    void api
+      .getNotification(id)
+      .then((n) => {
+        setNotification(n);
+        if (!n.read) {
+          notificationStore.markRead(n.id);
+          setNotification({ ...n, read: true });
+        }
+      })
+      .catch(() => setNotification(null));
   }, [id]);
 
   if (notification === undefined) {
     return (
       <div className="flex items-center justify-center flex-1 h-full">
-        <p className="text-sm" style={{ color: "rgba(255,255,255,0.3)" }}>Loading…</p>
+        <p className="text-sm" style={{ color: "rgba(255,255,255,0.3)" }}>
+          Loading…
+        </p>
       </div>
     );
   }
@@ -99,6 +124,7 @@ function DetailPanel({ id, onBack }: DetailPanelProps) {
   }
 
   const color = TYPE_COLOR[notification.type] ?? "var(--accent)";
+  const channelPermission = getChannelPermissionMetadata(notification);
 
   return (
     <div className="flex flex-col h-full">
@@ -139,7 +165,10 @@ function DetailPanel({ id, onBack }: DetailPanelProps) {
       <div className="flex-1 overflow-y-auto px-5 py-5">
         <div
           className="rounded-2xl p-5 flex flex-col gap-4"
-          style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+          style={{
+            background: "rgba(255,255,255,0.04)",
+            border: "1px solid rgba(255,255,255,0.08)",
+          }}
         >
           {notification.type in TYPE_LABEL && (
             <span
@@ -167,6 +196,57 @@ function DetailPanel({ id, onBack }: DetailPanelProps) {
             <Clock size={11} />
             {formatFull(notification.createdAt)}
           </div>
+
+          {channelPermission && (
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  await api.setChannelSenderPermission({
+                    connectionId: channelPermission.connectionId,
+                    channelId: channelPermission.channelId,
+                    senderId: channelPermission.senderId,
+                    senderName: channelPermission.senderName,
+                    status: "approved",
+                  });
+                  notificationStore.remove(notification.id);
+                  navigate("/channels");
+                }}
+                className="self-start flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors"
+                style={{
+                  background: "rgba(34,197,94,0.12)",
+                  color: "#4ade80",
+                  border: "1px solid rgba(34,197,94,0.24)",
+                }}
+              >
+                <Check size={13} />
+                Allow sender
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  await api.setChannelSenderPermission({
+                    connectionId: channelPermission.connectionId,
+                    channelId: channelPermission.channelId,
+                    senderId: channelPermission.senderId,
+                    senderName: channelPermission.senderName,
+                    status: "blocked",
+                  });
+                  notificationStore.remove(notification.id);
+                  navigate("/channels");
+                }}
+                className="self-start flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors"
+                style={{
+                  background: "rgba(239,68,68,0.12)",
+                  color: "#f87171",
+                  border: "1px solid rgba(239,68,68,0.24)",
+                }}
+              >
+                <X size={13} />
+                Block sender
+              </button>
+            </div>
+          )}
 
           {notification.targetUrl && (
             <button
@@ -221,14 +301,11 @@ export function NotificationsPage() {
 
   // On mobile: show list when no id, show detail when id is set
   // On md+: always show both panels side by side
-  const showList = !id;   // mobile: show list only when nothing selected
+  const showList = !id; // mobile: show list only when nothing selected
   const showDetail = !!id; // mobile: show detail only when something selected
 
   return (
-    <div
-      className="flex h-full"
-      style={{ background: "#0f0f11", color: "rgba(255,255,255,0.85)" }}
-    >
+    <div className="flex h-full" style={{ background: "#0f0f11", color: "rgba(255,255,255,0.85)" }}>
       {/* Left: notification list */}
       <div
         className={`
@@ -253,7 +330,10 @@ export function NotificationsPage() {
             <ArrowLeft size={15} />
           </button>
           <Bell size={13} style={{ color: "rgba(255,255,255,0.4)" }} />
-          <span className="text-sm font-semibold flex-1" style={{ color: "rgba(255,255,255,0.85)" }}>
+          <span
+            className="text-sm font-semibold flex-1"
+            style={{ color: "rgba(255,255,255,0.85)" }}
+          >
             Notifications
           </span>
           {notifications.filter((n) => !n.read).length > 0 && (
@@ -271,7 +351,9 @@ export function NotificationsPage() {
           {notifications.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 h-48">
               <Bell size={28} style={{ color: "rgba(255,255,255,0.1)" }} />
-              <p className="text-xs" style={{ color: "rgba(255,255,255,0.3)" }}>No notifications</p>
+              <p className="text-xs" style={{ color: "rgba(255,255,255,0.3)" }}>
+                No notifications
+              </p>
             </div>
           ) : (
             <ul className="divide-y" style={{ borderColor: "rgba(255,255,255,0.05)" }}>
@@ -286,10 +368,13 @@ export function NotificationsPage() {
                         background: isSelected ? "rgba(255,255,255,0.06)" : "transparent",
                       }}
                       onMouseEnter={(e) => {
-                        if (!isSelected) (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.03)";
+                        if (!isSelected)
+                          (e.currentTarget as HTMLElement).style.background =
+                            "rgba(255,255,255,0.03)";
                       }}
                       onMouseLeave={(e) => {
-                        if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent";
+                        if (!isSelected)
+                          (e.currentTarget as HTMLElement).style.background = "transparent";
                       }}
                       onClick={() => handleSelect(n.id)}
                     >
@@ -388,11 +473,7 @@ export function NotificationsPage() {
           ${showDetail ? "flex" : "hidden"} md:flex
         `}
       >
-        {id ? (
-          <DetailPanel id={id} onBack={handleBack} />
-        ) : (
-          <DetailEmpty />
-        )}
+        {id ? <DetailPanel id={id} onBack={handleBack} /> : <DetailEmpty />}
       </div>
     </div>
   );

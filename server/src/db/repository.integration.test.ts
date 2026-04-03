@@ -27,7 +27,11 @@ const {
   listConversations,
   deleteConversation,
   listMessages,
+  listConversationSearchResults,
+  getChannelSenderPermission,
+  listChannelSenderPermissions,
   updateConversation,
+  upsertChannelSenderPermission,
   deleteMessagesFromId,
 } = await import("./repository.js");
 
@@ -227,5 +231,65 @@ describe("updateConversation", () => {
     const retrieved = getConversation(conversation.id);
     assert.ok(retrieved !== null);
     assert.equal(retrieved.title, "New title");
+  });
+});
+
+describe("listConversationSearchResults", () => {
+  test("finds relevant snippets from previous chats", () => {
+    const planning = makeConversation({ title: "Trip planning" });
+    createMessage({
+      conversationId: planning.id,
+      role: "user",
+      content: "Let's compare hotels in Lisbon near the tram.",
+    });
+    createMessage({
+      conversationId: planning.id,
+      role: "assistant",
+      content: "You preferred boutique hotels in Alfama with breakfast included.",
+    });
+
+    const coding = makeConversation({ title: "Release checklist" });
+    createMessage({
+      conversationId: coding.id,
+      role: "user",
+      content: "Remember to verify the staging deploy before the launch.",
+    });
+
+    const results = listConversationSearchResults("boutique hotels Lisbon", 3);
+
+    assert.ok(results.length > 0);
+    assert.equal(results[0].conversationId, planning.id);
+    assert.match(results[0].snippet, /boutique hotels|Lisbon/i);
+  });
+});
+
+describe("channel sender permissions", () => {
+  test("stores and updates per-sender channel access decisions", () => {
+    const approved = upsertChannelSenderPermission({
+      connectionId: "conn-1",
+      channelId: "telegram",
+      senderId: "user-123",
+      senderName: "Alice",
+      status: "approved",
+    });
+
+    assert.equal(approved.status, "approved");
+    assert.equal(getChannelSenderPermission("conn-1", "user-123")?.senderName, "Alice");
+
+    const blocked = upsertChannelSenderPermission({
+      connectionId: "conn-1",
+      channelId: "telegram",
+      senderId: "user-123",
+      senderName: "Alice Cooper",
+      status: "blocked",
+    });
+
+    assert.equal(blocked.status, "blocked");
+    assert.equal(blocked.senderName, "Alice Cooper");
+    assert.ok(
+      listChannelSenderPermissions("conn-1").some(
+        (entry) => entry.senderId === "user-123" && entry.status === "blocked"
+      )
+    );
   });
 });

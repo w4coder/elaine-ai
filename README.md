@@ -327,7 +327,8 @@ npm run format       # Prettier
 
 - [ ] **MCP (Model Context Protocol)** — connect any MCP server as a first-class tool source; auto-discover tools and resources from running MCP processes
 - [ ] Social integrations: Twitter / X, LinkedIn, Mastodon — post, search, fetch threads
-- [ ] Messaging: Slack, Discord, Telegram — read channels, send messages, react to mentions
+- [x] Messaging channel foundation — Slack, Discord, Telegram, and WhatsApp can connect locally, receive inbound messages, and route replies back through Elaine
+- [ ] Messaging channel polish — richer message types, mention-specific routing, reactions, and deeper thread awareness
 - [ ] Productivity: Notion, Obsidian, Linear, GitHub Issues — create notes, manage tasks, file bugs
 - [ ] Communication: email sending via SMTP, calendar invites
 - [x] **OAuth flow inside the app for cloud service connections** — GitHub, Google, Discord, Slack, Twitter/X, LinkedIn, Telegram; credentials encrypted at rest
@@ -338,6 +339,9 @@ npm run format       # Prettier
 - [ ] **Local encryption at rest** — SQLite database encrypted with SQLCipher; key derived from a user passphrase
 - [ ] **Transport security** — enforce HTTPS even for localhost; self-signed cert generator on first run
 - [ ] **Secrets vault** — API keys stored encrypted, never written to plain-text config files
+- [x] **Secure channel communication gate** — unknown Slack, Discord, Telegram, and WhatsApp senders do not enter a conversation automatically; approval happens per sender, and first messages stay queued until approved
+- [x] **Encrypted channel credentials** — bot tokens, app tokens, and channel-linked OAuth secrets are stored encrypted locally and masked when read back through the API
+- [x] **Isolated WhatsApp sessions** — each WhatsApp connection keeps its own local session state and reconnect lifecycle instead of sharing a global auth context
 - [x] **Sandboxed skill execution** — `shell_exec` and `code_exec` run inside a restricted container or OS sandbox (nsjail / Docker)
 - [x] **Skill permission model** — each skill requires an explicit capability grant; three-mode UI (Allow once / Allow in thread / Deny); task mode no longer auto-grants
 - [x] **Audit log** — tamper-evident HMAC-signed append-only log of every tool call, argument, and result
@@ -349,6 +353,15 @@ npm run format       # Prettier
 ## Changelog
 
 ### Unreleased
+
+#### Channels
+
+- New `/channels` flow for local messaging integrations: Telegram, WhatsApp, Discord, and Slack
+- Token-based setup for Telegram, Discord, and Slack; QR-based setup for WhatsApp via a local session handshake
+- Unknown channel senders are gated per sender before any inbound message is routed into an Elaine conversation
+- First inbound messages are persisted as pending until approval, then replayed through the normal routing pipeline
+- Channel credentials are validated before runner startup and stored encrypted locally; secrets remain masked in API reads
+- WhatsApp sessions are isolated per connection and reconnect automatically after the normal post-pairing restart
 
 #### Connections
 

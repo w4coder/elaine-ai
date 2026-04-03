@@ -4,6 +4,7 @@
   "ask_user": "safe",
   "task_done": "safe",
   "memory_search": "safe",
+  "conversation_search": "safe",
   "schedule_setup": "safe",
   "schedule_task": "safe",
   "visualize__read_me": "safe",

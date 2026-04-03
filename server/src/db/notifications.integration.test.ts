@@ -97,7 +97,11 @@ describe("markNotificationRead — persistence", () => {
 
     const after = getNotification(n.id);
     assert.ok(after !== null);
-    assert.equal(after.read, true, "read status must be true in DB after markNotificationRead(true)");
+    assert.equal(
+      after.read,
+      true,
+      "read status must be true in DB after markNotificationRead(true)"
+    );
   });
 
   test("persists read=false (mark unread) to the database", () => {
@@ -109,7 +113,11 @@ describe("markNotificationRead — persistence", () => {
 
     const after = getNotification(n.id);
     assert.ok(after !== null);
-    assert.equal(after.read, false, "read status must be false in DB after markNotificationRead(false)");
+    assert.equal(
+      after.read,
+      false,
+      "read status must be false in DB after markNotificationRead(false)"
+    );
   });
 
   test("persists across a fresh read — simulates page refresh", () => {
@@ -201,7 +209,10 @@ describe("listNotifications", () => {
 
     const unread = listNotifications({ unreadOnly: true });
 
-    assert.ok(unread.some((n) => n.id === a.id), "unread notification must appear");
+    assert.ok(
+      unread.some((n) => n.id === a.id),
+      "unread notification must appear"
+    );
     assert.ok(!unread.some((n) => n.id === b.id), "read notification must not appear");
   });
 });

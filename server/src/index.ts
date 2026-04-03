@@ -18,8 +18,10 @@ import { scheduledJobRoutes } from "./routes/scheduledJobs.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { auditRoutes } from "./routes/audit.js";
 import { permissionRoutes } from "./routes/permissions.js";
-import { connectionRoutes } from "./routes/connections.js";
+import { channelRoutes } from "./routes/channels.js";
 import { ScheduledJobRunner } from "./services/scheduledJobRunner.js";
+import { bootAll as bootChannelRunners } from "./channels/runnerManager.js";
+import { initMessageRouter } from "./channels/messageRouter.js";
 
 dotenv.config({ path: resolve(getProjectRoot(), ".env") });
 
@@ -122,7 +124,7 @@ async function buildApp(): Promise<void> {
   await app.register(notificationRoutes);
   await app.register(auditRoutes);
   await app.register(permissionRoutes);
-  await app.register(connectionRoutes);
+  await app.register(channelRoutes);
 
   await registerStaticAssets();
 
@@ -144,9 +146,12 @@ async function start(): Promise<void> {
     adapter: createHostAdapter(),
   });
   memory.start("local_user");
+  initMessageRouter(memory);
 
   const jobRunner = new ScheduledJobRunner();
   jobRunner.start();
+
+  await bootChannelRunners();
 
   await buildApp();
 

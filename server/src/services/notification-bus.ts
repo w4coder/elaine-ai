@@ -1,8 +1,26 @@
 export type NotificationEvent =
   | { type: "schedule_started"; jobId: string; jobTitle: string; conversationId: string }
   | { type: "schedule_step"; conversationId: string; content?: string; reasoning?: string }
-  | { type: "schedule_completed"; jobId: string; jobTitle: string; conversationId: string; success: boolean }
-  | { type: "notification_created"; notification: { id: string; type: string; title: string; body: string | null; targetUrl: string | null; read: boolean; createdAt: string } };
+  | {
+      type: "schedule_completed";
+      jobId: string;
+      jobTitle: string;
+      conversationId: string;
+      success: boolean;
+    }
+  | {
+      type: "notification_created";
+      notification: {
+        id: string;
+        type: string;
+        title: string;
+        body: string | null;
+        targetUrl: string | null;
+        metadata: Record<string, unknown> | null;
+        read: boolean;
+        createdAt: string;
+      };
+    };
 
 class NotificationBus {
   private readonly listeners = new Set<(event: NotificationEvent) => void>();

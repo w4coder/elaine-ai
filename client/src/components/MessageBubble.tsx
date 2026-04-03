@@ -105,7 +105,7 @@ function ThinkingBlock({ content, isStreaming }: { content: string; isStreaming:
         }}
         onClick={() => setOpen((o) => !o)}
       >
-        {(isStreaming)? (
+        {isStreaming ? (
           <AppLogoSparkle size={20} animated={isStreaming && !open} />
         ) : (
           <AppLogo size={20} animated={isStreaming && !open} />
