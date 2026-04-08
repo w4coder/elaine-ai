@@ -6,7 +6,6 @@
  */
 
 import { listChannelConnections, getChannelConnectionToken } from "../db/repository.js";
-import { decryptApiKey } from "../utils/crypto.js";
 import { TelegramRunner } from "./runners/telegram.js";
 import { DiscordRunner } from "./runners/discord.js";
 import { SlackRunner } from "./runners/slack.js";
@@ -65,6 +64,11 @@ export async function startRunner(connection: ChannelConnection): Promise<void> 
     console.error(`[runnerManager] Failed to start ${connection.provider} runner:`, err);
     runners.delete(connection.id);
   }
+}
+
+export async function restartRunner(connection: ChannelConnection): Promise<void> {
+  await stopRunner(connection.id);
+  await startRunner(connection);
 }
 
 export async function stopRunner(connectionId: string): Promise<void> {

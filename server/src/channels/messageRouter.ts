@@ -13,14 +13,13 @@ import { getProfile } from "../providers/index.js";
 import { generateAssistantReply } from "../services/chat-service.js";
 import { checkChannelSenderAccess } from "../services/channelAccess.js";
 import { createConversationSearchFn, createMemorySearchFn } from "../services/search.js";
-import { getToolsForIntent } from "../skills/skillsConfig.js";
 import {
   classifyIntent,
   getClassifierConfig,
   resolveClassifierModel,
 } from "../classifier/intentClassifier.js";
 import type { MemoryModule } from "../memory/types.js";
-import type { ChannelId } from "../types.js";
+import type { ChannelId, ToolDefinition } from "../types.js";
 
 const LOCAL_USER = "local_user";
 
@@ -108,7 +107,10 @@ export async function routeMessage(msg: IncomingMessage): Promise<string> {
     }
   }
 
-  const tools = await getToolsForIntent(intent);
+  // External messaging channels should not expose local agent tools.
+  // We still pass memory context into the system prompt, but avoid shell/file/web
+  // execution and agent-loop behaviors that can end in a non-text final turn.
+  const tools: ToolDefinition[] = [];
 
   // ── Memory context ────────────────────────────────────────────────────────
   let memoryContext: string | undefined;

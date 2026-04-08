@@ -1233,6 +1233,13 @@ export function listChannelConnections(): ChannelConnection[] {
   return rows.map(mapChannelConnectionRow);
 }
 
+export function getChannelConnection(id: string): ChannelConnection | null {
+  const row = db.prepare("SELECT * FROM oauth_connections WHERE id = ?").get(id) as
+    | ChannelConnectionRow
+    | undefined;
+  return row ? mapChannelConnectionRow(row) : null;
+}
+
 export function upsertChannelConnection(data: {
   id: string;
   provider: ChannelId;
@@ -1298,6 +1305,18 @@ export function getChannelConnectionToken(
 
 export function deleteChannelConnection(id: string): void {
   db.prepare("DELETE FROM oauth_connections WHERE id = ?").run(id);
+}
+
+export function deleteChannelConnectionWithRelatedData(id: string): void {
+  db.prepare("DELETE FROM channel_sender_permissions WHERE connection_id = ?").run(id);
+  db.prepare("DELETE FROM channel_pending_messages WHERE connection_id = ?").run(id);
+  db.prepare("DELETE FROM channel_conversations WHERE channel_key LIKE ?").run(`${id}:%`);
+  db.prepare(
+    `DELETE FROM app_notifications
+     WHERE type = 'channel_permission_request'
+       AND json_extract(metadata, '$.connectionId') = ?`
+  ).run(id);
+  deleteChannelConnection(id);
 }
 
 /** Wipe all user data and reset settings to defaults. Used by the onboarding reset flow. */

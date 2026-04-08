@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
-  deleteChannelConnection,
+  deleteChannelConnectionWithRelatedData,
   deleteChannelSenderPermission,
+  getChannelConnection,
   listChannelSenderPermissions,
   listChannelConnections,
   upsertChannelSenderPermission,
@@ -12,8 +13,12 @@ import {
 import { getChannelRegistry } from "../channels/registry.js";
 import { encryptApiKey } from "../utils/crypto.js";
 import { nowIso } from "../utils/time.js";
-import { startRunner, stopRunner } from "../channels/runnerManager.js";
-import { setupWhatsApp } from "../channels/runners/whatsapp.js";
+import { restartRunner, stopRunner } from "../channels/runnerManager.js";
+import {
+  deleteWhatsAppSession,
+  moveWhatsAppSession,
+  setupWhatsApp,
+} from "../channels/runners/whatsapp.js";
 import { clearPendingMessagesForSender } from "../services/channelAccess.js";
 import { processPendingMessagesForSender } from "../services/channelPendingProcessor.js";
 import type { ChannelId, ChannelSenderStatus } from "../types.js";
@@ -86,6 +91,14 @@ export async function channelRoutes(app: FastifyInstance): Promise<void> {
       })
       .safeParse(request.body);
     if (!parse.success) return reply.code(400).send({ error: "Invalid sender permission payload" });
+
+    const connection = getChannelConnection(parse.data.connectionId);
+    if (!connection) {
+      return reply.code(404).send({ error: "Channel connection not found" });
+    }
+    if (connection.provider !== parse.data.channelId) {
+      return reply.code(400).send({ error: "channelId does not match the connection provider" });
+    }
 
     const updated = upsertChannelSenderPermission({
       connectionId: parse.data.connectionId,
@@ -173,7 +186,7 @@ export async function channelRoutes(app: FastifyInstance): Promise<void> {
         updatedAt: now,
       });
 
-      await startRunner(conn);
+      await restartRunner(conn);
       return conn;
     }
   );
@@ -213,8 +226,11 @@ export async function channelRoutes(app: FastifyInstance): Promise<void> {
             updatedAt: now,
           });
 
-          const runner = (await import("../channels/runnerManager.js")).startRunner;
-          await runner(conn);
+          if (conn.id !== connectionId) {
+            await stopRunner(conn.id);
+            moveWhatsAppSession(connectionId, conn.id);
+          }
+          await restartRunner(conn);
 
           send("connected", { connectionId: conn.id, accountName: event.accountName });
           break;
@@ -233,7 +249,8 @@ export async function channelRoutes(app: FastifyInstance): Promise<void> {
   // ── Disconnect ────────────────────────────────────────────────────────────
   app.delete<{ Params: { id: string } }>("/api/channels/accounts/:id", async (request, reply) => {
     await stopRunner(request.params.id);
-    deleteChannelConnection(request.params.id);
+    deleteChannelConnectionWithRelatedData(request.params.id);
+    deleteWhatsAppSession(request.params.id);
     return reply.code(204).send();
   });
 }

@@ -14,17 +14,47 @@ import makeWASocket, {
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { getProjectRoot } from "../../db/database.js";
 import { formatReplyForChannel } from "../formatReply.js";
 import { routeMessage } from "../messageRouter.js";
 import { withTypingIndicator } from "../typing.js";
 
-function sessionDir(connectionId: string): string {
-  const dir = resolve(getProjectRoot(), "server", "data", "sessions", `whatsapp-${connectionId}`);
+function sessionsRoot(): string {
+  const dir = resolve(getProjectRoot(), "server", "data", "sessions");
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+function resolveSessionDir(connectionId: string): string {
+  return resolve(sessionsRoot(), `whatsapp-${connectionId}`);
+}
+
+function sessionDir(connectionId: string): string {
+  const dir = resolveSessionDir(connectionId);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function moveWhatsAppSession(fromConnectionId: string, toConnectionId: string): void {
+  if (fromConnectionId === toConnectionId) return;
+
+  const fromDir = resolveSessionDir(fromConnectionId);
+  if (!existsSync(fromDir)) return;
+
+  const toDir = resolveSessionDir(toConnectionId);
+  if (existsSync(toDir)) {
+    rmSync(toDir, { recursive: true, force: true });
+  }
+
+  renameSync(fromDir, toDir);
+}
+
+export function deleteWhatsAppSession(connectionId: string): void {
+  const dir = resolveSessionDir(connectionId);
+  if (!existsSync(dir)) return;
+  rmSync(dir, { recursive: true, force: true });
 }
 
 export interface QrEvent {
@@ -154,7 +184,7 @@ export class WhatsAppRunner {
   }
 
   async start(): Promise<void> {
-    const dir = sessionDir(this.connectionId);
+    const dir = resolveSessionDir(this.connectionId);
     if (!existsSync(dir)) return;
 
     await this.connect();

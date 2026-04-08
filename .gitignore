@@ -13,3 +13,5 @@ Thumbs.db
 *.py
 *.sh
 *.txt
+server/.agent_files/fetch_output.json
+server/.agent_files/fetch_result.json
