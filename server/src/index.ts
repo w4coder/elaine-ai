@@ -18,8 +18,10 @@ import { scheduledJobRoutes } from "./routes/scheduledJobs.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { auditRoutes } from "./routes/audit.js";
 import { permissionRoutes } from "./routes/permissions.js";
-import { connectionRoutes } from "./routes/connections.js";
+import { channelRoutes } from "./routes/channels.js";
 import { ScheduledJobRunner } from "./services/scheduledJobRunner.js";
+import { bootAll as bootChannelRunners } from "./channels/runnerManager.js";
+import { initMessageRouter } from "./channels/messageRouter.js";
 
 dotenv.config({ path: resolve(getProjectRoot(), ".env") });
 
@@ -95,19 +97,43 @@ async function registerStaticAssets(): Promise<void> {
   });
 }
 
+function buildAllowedOrigins(): Set<string> {
+  const host = process.env.HOST ?? "127.0.0.1";
+  const port = Number(process.env.PORT ?? 3001);
+  const configuredClientOrigin = process.env.CLIENT_ORIGIN?.trim();
+  const origins = new Set<string>();
+
+  if (configuredClientOrigin) {
+    origins.add(configuredClientOrigin);
+  } else {
+    origins.add("http://127.0.0.1:5173");
+    origins.add("http://localhost:5173");
+  }
+
+  origins.add(`http://${host}:${port}`);
+
+  if (host === "127.0.0.1") {
+    origins.add(`http://localhost:${port}`);
+  } else if (host === "localhost") {
+    origins.add(`http://127.0.0.1:${port}`);
+  }
+
+  return origins;
+}
+
 // ─── App bootstrap ────────────────────────────────────────────────────────────
 
 async function buildApp(): Promise<void> {
   await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
+  const allowedOrigins = buildAllowedOrigins();
 
   await app.register(cors, {
     origin: (origin, callback) => {
-      const allowed = process.env.CLIENT_ORIGIN ?? "http://127.0.0.1:5173";
-      if (!origin || origin === allowed) {
+      if (!origin || allowedOrigins.has(origin)) {
         callback(null, true);
         return;
       }
-      callback(new Error("Origin not allowed"), false);
+      callback(null, false);
     },
   });
 
@@ -122,7 +148,7 @@ async function buildApp(): Promise<void> {
   await app.register(notificationRoutes);
   await app.register(auditRoutes);
   await app.register(permissionRoutes);
-  await app.register(connectionRoutes);
+  await app.register(channelRoutes);
 
   await registerStaticAssets();
 
@@ -144,9 +170,12 @@ async function start(): Promise<void> {
     adapter: createHostAdapter(),
   });
   memory.start("local_user");
+  initMessageRouter(memory);
 
   const jobRunner = new ScheduledJobRunner();
   jobRunner.start();
+
+  await bootChannelRunners();
 
   await buildApp();
 

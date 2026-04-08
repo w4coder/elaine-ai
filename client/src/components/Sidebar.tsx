@@ -141,7 +141,7 @@ export function Sidebar(props: SidebarProps) {
                   type="button"
                   onClick={() => {
                     props?.onToggle();
-                    props.onSelectConversation(conversation.id)
+                    props.onSelectConversation(conversation.id);
                   }}
                 >
                   <span className="sidebar__item-title">{conversation.title}</span>
@@ -248,7 +248,7 @@ export function Sidebar(props: SidebarProps) {
               type="button"
               onClick={() => {
                 setProfileMenuOpen(false);
-                navigate("/settings?tab=connections");
+                navigate("/channels");
               }}
             >
               <Link2 size={15} />

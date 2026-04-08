@@ -3,28 +3,26 @@ import {
   Check,
   Eye,
   EyeOff,
-  Github,
   Hash,
   Link2,
-  Linkedin,
-  Mail,
+  MessageCircle,
   MessageSquare,
   Mic,
   Pencil,
   Plus,
   Send,
   Trash2,
-  Twitter,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { ASRSetupModal } from "../components/ASRSetupModal";
 import { api } from "../lib/api";
 import type {
   AppSettings,
-  OAuthConnection,
-  OAuthProvider,
+  ChannelConnection,
+  ChannelDescriptor,
+  ChannelId,
   ProviderProfile,
   ProviderType,
   UserModel,
@@ -100,10 +98,10 @@ function toMaskedSettings(settings: AppSettings): AppSettings {
       ...profile,
       apiKey: profile.apiKey ? MASKED : profile.apiKey,
     })),
-    connections: settings.connections
+    channels: settings.channels
       ? Object.fromEntries(
-          Object.entries(settings.connections).map(([provider, cfg]) => [
-            provider,
+          Object.entries(settings.channels).map(([id, cfg]) => [
+            id,
             { ...cfg, clientSecret: cfg.clientSecret ? MASKED : cfg.clientSecret },
           ])
         )
@@ -111,156 +109,76 @@ function toMaskedSettings(settings: AppSettings): AppSettings {
   };
 }
 
-// ─── Connections tab — provider metadata & card ───────────────────────────────
+// ─── Channel icons ────────────────────────────────────────────────────────────
 
-const ICON_SIZE = 18;
-
-interface ProviderMeta {
-  label: string;
-  description: string;
-  icon: React.ReactNode;
-  color: string;
-  authType: "oauth" | "token";
-  tokenPlaceholder?: string;
-  needsCredentials: boolean;
-  docsUrl: string;
-}
-
-const CONN_PROVIDERS: Record<OAuthProvider, ProviderMeta> = {
-  github: {
-    label: "GitHub",
-    description: "Repositories, issues, pull requests",
-    icon: <Github size={ICON_SIZE} />,
-    color: "#e2e8f0",
-    authType: "oauth",
-    needsCredentials: true,
-    docsUrl: "https://docs.github.com/apps/oauth-apps/building-oauth-apps",
-  },
-  google: {
-    label: "Google / Gmail",
-    description: "Email, calendar, Google services",
-    icon: <Mail size={ICON_SIZE} />,
-    color: "#ea4335",
-    authType: "oauth",
-    needsCredentials: true,
-    docsUrl: "https://console.cloud.google.com/apis/credentials",
-  },
-  discord: {
-    label: "Discord",
-    description: "Servers, channels, messages",
-    icon: <MessageSquare size={ICON_SIZE} />,
-    color: "#5865f2",
-    authType: "oauth",
-    needsCredentials: true,
-    docsUrl: "https://discord.com/developers/applications",
-  },
-  slack: {
-    label: "Slack",
-    description: "Workspaces, channels, messages",
-    icon: <Hash size={ICON_SIZE} />,
-    color: "#e01e5a",
-    authType: "oauth",
-    needsCredentials: true,
-    docsUrl: "https://api.slack.com/apps",
-  },
-  twitter: {
-    label: "Twitter / X",
-    description: "Tweets, followers, timelines",
-    icon: <Twitter size={ICON_SIZE} />,
-    color: "#1d9bf0",
-    authType: "oauth",
-    needsCredentials: true,
-    docsUrl: "https://developer.twitter.com/en/portal/dashboard",
-  },
-  linkedin: {
-    label: "LinkedIn",
-    description: "Profile, posts, connections",
-    icon: <Linkedin size={ICON_SIZE} />,
-    color: "#0a66c2",
-    authType: "oauth",
-    needsCredentials: true,
-    docsUrl: "https://www.linkedin.com/developers/apps",
-  },
-  telegram: {
-    label: "Telegram",
-    description: "Bot messages, channels",
-    icon: <Send size={ICON_SIZE} />,
-    color: "#0088cc",
-    authType: "token",
-    tokenPlaceholder: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-    needsCredentials: false,
-    docsUrl: "https://core.telegram.org/bots#how-do-i-create-a-bot",
-  },
+const CH_ICON_SIZE = 18;
+const CHANNEL_ICONS: Record<ChannelId, React.ReactNode> = {
+  telegram: <Send size={CH_ICON_SIZE} />,
+  whatsapp: <MessageSquare size={CH_ICON_SIZE} />,
+  discord: <Hash size={CH_ICON_SIZE} />,
+  slack: <MessageCircle size={CH_ICON_SIZE} />,
 };
 
-const CONN_ORDER: OAuthProvider[] = [
-  "github",
-  "google",
-  "discord",
-  "slack",
-  "twitter",
-  "linkedin",
-  "telegram",
-];
+// ─── Channel connect modal ────────────────────────────────────────────────────
 
-interface ProviderCardProps {
-  provider: OAuthProvider;
-  meta: ProviderMeta;
-  connection: OAuthConnection | undefined;
-  appCfg: { clientId: string; clientSecret: string } | undefined;
-  onConnect(provider: OAuthProvider): void;
-  onDisconnect(connection: OAuthConnection): void;
-  onSaveCredentials(provider: OAuthProvider, clientId: string, clientSecret: string): Promise<void>;
-  onSaveToken(provider: OAuthProvider, token: string): Promise<void>;
+interface ChannelModalProps {
+  channel: ChannelDescriptor;
+  onClose(): void;
+  onConnected(conn: import("../lib/types").ChannelConnection): void;
 }
 
-function ProviderCard({
-  provider,
-  meta,
-  connection,
-  appCfg,
-  onConnect,
-  onDisconnect,
-  onSaveCredentials,
-  onSaveToken,
-}: ProviderCardProps) {
-  const [expanded, setExpanded] = useState(false);
-  const [clientId, setClientId] = useState(appCfg?.clientId ?? "");
-  const [clientSecret, setClientSecret] = useState(appCfg?.clientSecret ?? "");
-  const [showSecret, setShowSecret] = useState(false);
-  const [tokenValue, setTokenValue] = useState("");
+function ChannelConnectModal({ channel, onClose, onConnected }: ChannelModalProps) {
+  const [token, setToken] = useState("");
+  const [token2, setToken2] = useState("");
   const [saving, setSaving] = useState(false);
-  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setClientId(appCfg?.clientId ?? "");
-    setClientSecret(appCfg?.clientSecret ?? "");
-  }, [appCfg]);
+  // WhatsApp QR state
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [qrStatus, setQrStatus] = useState<"idle" | "loading" | "scanning" | "done">("idle");
 
-  const configured = meta.authType === "token" ? true : !!(appCfg?.clientId && appCfg.clientSecret);
-  const connected = !!connection;
+  const mInputClass = "w-full px-3 py-2 text-sm rounded-xl outline-none transition-colors";
+  const mInputStyle = {
+    background: "rgba(255,255,255,0.06)",
+    border: "1px solid rgba(255,255,255,0.1)",
+    color: "rgba(255,255,255,0.85)",
+  };
 
-  async function handleSaveCreds() {
-    setSaving(true);
-    try {
-      await onSaveCredentials(provider, clientId, clientSecret);
-      setExpanded(false);
-    } finally {
-      setSaving(false);
-    }
+  // Start WhatsApp QR flow
+  function startQr() {
+    setQrStatus("loading");
+    setError(null);
+    const close = api.openWhatsAppQrStream({
+      onQr(dataUrl) {
+        setQrDataUrl(dataUrl);
+        setQrStatus("scanning");
+      },
+      onConnected(data) {
+        setQrStatus("done");
+        void api.listChannelAccounts().then((accounts) => {
+          const conn = accounts.find((a) => a.id === data.connectionId);
+          if (conn) onConnected(conn);
+          else onClose();
+        });
+      },
+      onError(msg) {
+        setError(msg);
+        setQrStatus("idle");
+      },
+    });
+    return close;
   }
 
-  async function handleConnect() {
-    setConnecting(true);
-    try { await onConnect(provider); } finally { setConnecting(false); }
-  }
-
-  async function handleSaveToken() {
-    if (!tokenValue.trim()) return;
+  async function handleTokenConnect() {
+    if (!token.trim()) return;
+    if (channel.id === "slack" && !token2.trim()) return;
     setSaving(true);
+    setError(null);
     try {
-      await onSaveToken(provider, tokenValue.trim());
-      setTokenValue("");
+      const conn = await api.connectWithToken(channel.id, token.trim(), token2.trim() || undefined);
+      onConnected(conn);
+    } catch (err) {
+      setError((err as Error).message);
     } finally {
       setSaving(false);
     }
@@ -268,202 +186,274 @@ function ProviderCard({
 
   return (
     <div
-      className="rounded-2xl p-5 flex flex-col gap-4"
-      style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.65)", backdropFilter: "blur(6px)" }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
-      <div className="flex items-center gap-3">
+      <div
+        className="w-full max-w-sm mx-4 rounded-2xl flex flex-col overflow-hidden"
+        style={{ background: "#18181b", border: "1px solid rgba(255,255,255,0.1)" }}
+      >
+        {/* Header */}
         <div
-          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-          style={{ background: `${meta.color}22`, color: meta.color }}
+          className="flex items-center gap-3 px-5 py-4"
+          style={{ borderBottom: "1px solid rgba(255,255,255,0.07)" }}
         >
-          {meta.icon}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold" style={{ color: "rgba(255,255,255,0.9)" }}>
-              {meta.label}
-            </span>
-            {connected && (
-              <span
-                className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full"
-                style={{ background: "rgba(34,197,94,0.15)", color: "#4ade80" }}
-              >
-                <Check size={10} /> Connected
-              </span>
-            )}
+          <div
+            className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+            style={{ background: `${channel.color}20`, color: channel.color }}
+          >
+            {CHANNEL_ICONS[channel.id]}
           </div>
-          <p className="text-xs mt-0.5" style={{ color: "rgba(255,255,255,0.4)" }}>
-            {connection
-              ? (connection.accountName ?? connection.accountEmail ?? connection.accountId)
-              : meta.description}
+          <div className="flex-1">
+            <p className="text-sm font-semibold" style={{ color: "rgba(255,255,255,0.9)" }}>
+              Connect {channel.label}
+            </p>
+            <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
+              {channel.description}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 rounded-lg"
+            style={{ color: "rgba(255,255,255,0.4)" }}
+          >
+            <X size={15} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex flex-col gap-4 p-5">
+          {error && (
+            <p
+              className="text-xs px-3 py-2 rounded-lg"
+              style={{ background: "rgba(239,68,68,0.12)", color: "#f87171" }}
+            >
+              {error}
+            </p>
+          )}
+
+          {/* WhatsApp QR flow */}
+          {channel.authType === "qr" && (
+            <>
+              {qrStatus === "idle" && (
+                <>
+                  <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
+                    Opens a WhatsApp Web session on this device. Scan the QR code with your phone to
+                    connect.{" "}
+                    <a
+                      href={channel.docsUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline"
+                      style={{ color: channel.color }}
+                    >
+                      Learn more ↗
+                    </a>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={startQr}
+                    className="w-full py-2 rounded-xl text-sm font-medium transition-colors"
+                    style={{
+                      background: `${channel.color}22`,
+                      color: channel.color,
+                      border: `1px solid ${channel.color}44`,
+                    }}
+                  >
+                    Generate QR Code
+                  </button>
+                </>
+              )}
+
+              {qrStatus === "loading" && (
+                <div className="flex items-center justify-center py-8">
+                  <div className="text-xs animate-pulse" style={{ color: "rgba(255,255,255,0.4)" }}>
+                    Starting WhatsApp Web…
+                  </div>
+                </div>
+              )}
+
+              {qrStatus === "scanning" && qrDataUrl && (
+                <div className="flex flex-col items-center gap-3">
+                  <div className="p-3 rounded-xl" style={{ background: "white" }}>
+                    <img src={qrDataUrl} alt="WhatsApp QR Code" className="w-48 h-48" />
+                  </div>
+                  <p className="text-xs text-center" style={{ color: "rgba(255,255,255,0.4)" }}>
+                    Open WhatsApp → Linked Devices → Link a device
+                  </p>
+                </div>
+              )}
+
+              {qrStatus === "done" && (
+                <div className="flex items-center justify-center gap-2 py-4">
+                  <Check size={16} style={{ color: "#4ade80" }} />
+                  <span className="text-sm" style={{ color: "#4ade80" }}>
+                    Connected!
+                  </span>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Token-based flow (Telegram, Discord, Slack) */}
+          {channel.authType === "token" && (
+            <>
+              <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
+                <a
+                  href={channel.docsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                  style={{ color: channel.color }}
+                >
+                  Create your {channel.id} bot ↗
+                </a>{" "}
+                and paste the token below.
+              </p>
+              <div className="flex flex-col gap-3">
+                <div>
+                  <label className="text-xs mb-1 block" style={{ color: "rgba(255,255,255,0.5)" }}>
+                    {channel.tokenLabel ?? "Bot Token"}
+                  </label>
+                  <input
+                    className={mInputClass}
+                    style={mInputStyle}
+                    placeholder={channel.tokenPlaceholder ?? "Paste token…"}
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                  />
+                </div>
+                {channel.token2Label && (
+                  <div>
+                    <label
+                      className="text-xs mb-1 block"
+                      style={{ color: "rgba(255,255,255,0.5)" }}
+                    >
+                      {channel.token2Label}
+                    </label>
+                    <input
+                      className={mInputClass}
+                      style={mInputStyle}
+                      placeholder={channel.token2Placeholder ?? "Paste token…"}
+                      value={token2}
+                      onChange={(e) => setToken2(e.target.value)}
+                    />
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleTokenConnect()}
+                disabled={saving || !token.trim() || (!!channel.token2Label && !token2.trim())}
+                className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl text-sm font-medium transition-colors disabled:opacity-50"
+                style={{
+                  background: `${channel.color}22`,
+                  color: channel.color,
+                  border: `1px solid ${channel.color}44`,
+                }}
+              >
+                <Link2 size={13} />
+                {saving ? "Connecting…" : "Connect"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Channel grid card ────────────────────────────────────────────────────────
+
+interface ChannelCardProps {
+  channel: ChannelDescriptor;
+  connection: ChannelConnection | undefined;
+  onConnect(): void;
+  onDisconnect(): void;
+}
+
+function ChannelCard({ channel, connection, onConnect, onDisconnect }: ChannelCardProps) {
+  const connected = !!connection;
+  const accountLabel = connection?.accountName ?? connection?.accountEmail ?? connection?.accountId;
+
+  return (
+    <div
+      className="rounded-2xl flex flex-col overflow-hidden transition-all"
+      style={{
+        background: "rgba(255,255,255,0.04)",
+        border: connected ? `1px solid ${channel.color}44` : "1px solid rgba(255,255,255,0.08)",
+      }}
+    >
+      <div
+        className="h-0.5 w-full"
+        style={{ background: connected ? channel.color : "rgba(255,255,255,0.06)" }}
+      />
+      <div className="p-4 flex flex-col gap-3 flex-1">
+        <div className="flex items-start justify-between gap-2">
+          <div
+            className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{ background: `${channel.color}18`, color: channel.color }}
+          >
+            {CHANNEL_ICONS[channel.id]}
+          </div>
+          {connected && (
+            <span
+              className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full flex-shrink-0"
+              style={{
+                background: "rgba(34,197,94,0.12)",
+                color: "#4ade80",
+                border: "1px solid rgba(34,197,94,0.2)",
+              }}
+            >
+              <Check size={9} />
+              Connected
+            </span>
+          )}
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-semibold" style={{ color: "rgba(255,255,255,0.9)" }}>
+            {channel.label}
+          </span>
+          <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
+            {accountLabel ?? channel.description}
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="mt-auto">
           {connected ? (
             <button
               type="button"
-              onClick={() => onDisconnect(connection!)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors"
+              onClick={onDisconnect}
+              className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs transition-colors"
               style={{
-                background: "rgba(239,68,68,0.12)",
+                background: "rgba(239,68,68,0.08)",
                 color: "#f87171",
-                border: "1px solid rgba(239,68,68,0.2)",
+                border: "1px solid rgba(239,68,68,0.15)",
               }}
             >
-              <Trash2 size={12} /> Disconnect
+              <Trash2 size={11} />
+              Disconnect
             </button>
-          ) : meta.authType === "oauth" ? (
-            <>
-              {!configured && (
-                <button
-                  type="button"
-                  onClick={() => setExpanded((v) => !v)}
-                  className="px-3 py-1.5 rounded-lg text-xs transition-colors"
-                  style={{
-                    background: "rgba(255,255,255,0.07)",
-                    color: "rgba(255,255,255,0.6)",
-                    border: "1px solid rgba(255,255,255,0.1)",
-                  }}
-                >
-                  Setup
-                </button>
-              )}
-              {configured && (
-                <button
-                  type="button"
-                  onClick={handleConnect}
-                  disabled={connecting}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors disabled:opacity-50"
-                  style={{
-                    background: `${meta.color}22`,
-                    color: meta.color,
-                    border: `1px solid ${meta.color}44`,
-                  }}
-                >
-                  <Link2 size={12} /> {connecting ? "Opening…" : "Connect"}
-                </button>
-              )}
-              {appCfg && (
-                <button
-                  type="button"
-                  onClick={() => setExpanded((v) => !v)}
-                  className="p-1.5 rounded-lg transition-colors"
-                  style={{ color: "rgba(255,255,255,0.35)" }}
-                  title="Edit credentials"
-                >
-                  {expanded ? <X size={14} /> : <Eye size={14} />}
-                </button>
-              )}
-            </>
-          ) : null}
+          ) : (
+            <button
+              type="button"
+              onClick={onConnect}
+              className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              style={{
+                background: `${channel.color}18`,
+                color: channel.color,
+                border: `1px solid ${channel.color}35`,
+              }}
+            >
+              <Link2 size={11} />
+              Connect
+            </button>
+          )}
         </div>
       </div>
-
-      {meta.authType === "oauth" && expanded && (
-        <div className="flex flex-col gap-3 pt-1">
-          <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
-            Register an OAuth app and use{" "}
-            <code
-              className="px-1 py-0.5 rounded"
-              style={{ background: "rgba(255,255,255,0.08)", fontSize: "0.7rem" }}
-            >
-              http://127.0.0.1:3001/api/connections/{provider}/callback
-            </code>{" "}
-            as the redirect URI.{" "}
-            <a
-              href={meta.docsUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-              style={{ color: meta.color }}
-            >
-              Docs ↗
-            </a>
-          </p>
-          <input
-            className={inputClass}
-            style={inputStyle}
-            placeholder="Client ID"
-            value={clientId}
-            onChange={(e) => setClientId(e.target.value)}
-          />
-          <div className="relative">
-            <input
-              className={inputClass}
-              style={{ ...inputStyle, paddingRight: "2.5rem" }}
-              type={showSecret ? "text" : "password"}
-              placeholder={clientSecret === MASKED ? "••••••••" : "Client Secret"}
-              value={clientSecret === MASKED ? "" : clientSecret}
-              onChange={(e) => setClientSecret(e.target.value)}
-            />
-            <button
-              type="button"
-              className="absolute right-2.5 top-1/2 -translate-y-1/2"
-              style={{ color: "rgba(255,255,255,0.4)" }}
-              onClick={() => setShowSecret((v) => !v)}
-            >
-              {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
-          </div>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={handleSaveCreds}
-              disabled={saving || !clientId.trim()}
-              className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
-              style={{ background: "rgba(255,255,255,0.12)", color: "rgba(255,255,255,0.85)" }}
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setExpanded(false)}
-              className="px-4 py-1.5 rounded-lg text-xs transition-colors"
-              style={{ color: "rgba(255,255,255,0.4)" }}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {meta.authType === "token" && !connected && (
-        <div className="flex flex-col gap-3 pt-1">
-          <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
-            Create a bot via{" "}
-            <a
-              href={meta.docsUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-              style={{ color: meta.color }}
-            >
-              @BotFather ↗
-            </a>{" "}
-            and paste the token below.
-          </p>
-          <input
-            className={inputClass}
-            style={inputStyle}
-            placeholder={meta.tokenPlaceholder}
-            value={tokenValue}
-            onChange={(e) => setTokenValue(e.target.value)}
-          />
-          <button
-            type="button"
-            onClick={handleSaveToken}
-            disabled={saving || !tokenValue.trim()}
-            className="self-start flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
-            style={{
-              background: `${meta.color}22`,
-              color: meta.color,
-              border: `1px solid ${meta.color}44`,
-            }}
-          >
-            {saving ? "Validating…" : "Connect"}
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -482,7 +472,7 @@ function buildProfileDraft(
   };
 }
 
-type Tab = "prompts" | "models" | "connections";
+type Tab = "prompts" | "models" | "channels";
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
@@ -492,7 +482,7 @@ export function SettingsPage() {
   const [activeTab, setActiveTab] = useState<Tab>(() => {
     const tab = searchParams.get("tab");
     if (tab === "models") return "models";
-    if (tab === "connections") return "connections";
+    if (tab === "channels") return "channels";
     return "prompts";
   });
 
@@ -540,17 +530,24 @@ export function SettingsPage() {
   const [defaultModelsSaved, setDefaultModelsSaved] = useState(false);
   const [asrModelDraft, setAsrModelDraft] = useState("");
 
-  // Connections tab state
-  const [connections, setConnections] = useState<OAuthConnection[]>([]);
-  const [connectionsError, setConnectionsError] = useState<string | null>(null);
-  const oauthPopupRef = useRef<Window | null>(null);
+  // Channels tab state
+  const [channels, setChannels] = useState<ChannelDescriptor[]>([]);
+  const [channelAccounts, setChannelAccounts] = useState<ChannelConnection[]>([]);
+  const [channelModal, setChannelModal] = useState<ChannelDescriptor | null>(null);
+  const [channelError, setChannelError] = useState<string | null>(null);
 
   useEffect(() => {
-    void Promise.all([api.getSettings(), api.listUserModels(), api.listConnections()])
-      .then(([nextSettings, nextUserModels, nextConnections]) => {
+    void Promise.all([
+      api.getSettings(),
+      api.listUserModels(),
+      api.listChannels(),
+      api.listChannelAccounts(),
+    ])
+      .then(([nextSettings, nextUserModels, nextChannels, nextAccounts]) => {
         setSettings(nextSettings);
         setUserModels(nextUserModels);
-        setConnections(nextConnections);
+        setChannels(nextChannels);
+        setChannelAccounts(nextAccounts);
         setPromptsDraft({
           defaultSystemPrompt: nextSettings.defaultSystemPrompt,
           titleGenerationEnabled: nextSettings.titleGenerationEnabled,
@@ -560,22 +557,6 @@ export function SettingsPage() {
       .catch((error: unknown) => {
         setPageError(error instanceof Error ? error.message : "Failed to load settings.");
       });
-  }, []);
-
-  useEffect(() => {
-    function onMessage(event: MessageEvent) {
-      if (event.origin !== window.location.origin) return;
-      const data = event.data as { type?: string; message?: string };
-      if (data.type === "oauth_success") {
-        oauthPopupRef.current?.close();
-        void api.listConnections().then(setConnections);
-      } else if (data.type === "oauth_error") {
-        oauthPopupRef.current?.close();
-        setConnectionsError(data.message ?? "OAuth failed");
-      }
-    }
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
   }, []);
 
   const groupedModels = useMemo(() => {
@@ -602,55 +583,16 @@ export function SettingsPage() {
     }
   }
 
-  // ── Connections handlers ─────────────────────────────────────────────────────
+  // ── Channel handlers ─────────────────────────────────────────────────────────
 
-  async function handleConnectOAuth(provider: OAuthProvider) {
-    setConnectionsError(null);
-    try {
-      const { authUrl } = await api.startOAuthFlow(provider);
-      const popup = window.open(authUrl, `oauth_${provider}`, "width=600,height=700,left=200,top=100");
-      if (!popup) {
-        setConnectionsError("Popup was blocked. Please allow popups for this page and try again.");
-        return;
-      }
-      oauthPopupRef.current = popup;
-    } catch (err) {
-      setConnectionsError((err as Error).message);
-    }
+  function handleChannelConnected(conn: ChannelConnection) {
+    setChannelAccounts((prev) => [...prev.filter((c) => c.provider !== conn.provider), conn]);
+    setChannelModal(null);
   }
 
-  async function handleDisconnect(connection: OAuthConnection) {
-    await api.deleteConnection(connection.id);
-    setConnections((prev) => prev.filter((c) => c.id !== connection.id));
-  }
-
-  async function handleSaveCredentials(
-    provider: OAuthProvider,
-    clientId: string,
-    clientSecret: string
-  ) {
-    if (!settings) return;
-    const existing = settings.connections?.[provider];
-    const secretToSend =
-      clientSecret === "" && existing?.clientSecret === MASKED ? MASKED : clientSecret;
-    const saved = await api.saveSettings({
-      ...toMaskedSettings(settings),
-      connections: {
-        ...settings.connections,
-        [provider]: { clientId, clientSecret: secretToSend },
-      },
-    });
-    setSettings(saved);
-  }
-
-  async function handleSaveTelegramToken(provider: OAuthProvider, token: string) {
-    setConnectionsError(null);
-    try {
-      const conn = await api.saveTelegramToken(token);
-      setConnections((prev) => [...prev.filter((c) => c.provider !== provider), conn]);
-    } catch (err) {
-      setConnectionsError((err as Error).message);
-    }
+  async function handleChannelDisconnect(connection: ChannelConnection) {
+    await api.disconnectChannel(connection.id);
+    setChannelAccounts((prev) => prev.filter((c) => c.id !== connection.id));
   }
 
   // ── Prompts handlers ─────────────────────────────────────────────────────────
@@ -945,7 +887,7 @@ export function SettingsPage() {
 
         {/* Tab bar */}
         <div className="flex flex-col gap-1 px-6 pt-5 pb-1">
-          {(["prompts", "models", "connections"] as Tab[]).map((tab) => (
+          {(["prompts", "models", "channels"] as Tab[]).map((tab) => (
             <button
               key={tab}
               type="button"
@@ -1766,10 +1708,10 @@ export function SettingsPage() {
             </div>
           )}
 
-          {/* ── Connections tab ───────────────────────────────────────────── */}
-          {activeTab === "connections" && (
-            <div className="max-w-2xl mx-auto flex flex-col gap-4">
-              {connectionsError && (
+          {/* ── Channels tab ────────────────────────────────────────────── */}
+          {activeTab === "channels" && (
+            <div className="flex flex-col gap-5">
+              {channelError && (
                 <div
                   className="flex items-start gap-2 px-4 py-3 rounded-xl text-sm"
                   style={{
@@ -1779,8 +1721,12 @@ export function SettingsPage() {
                   }}
                 >
                   <X size={14} className="mt-0.5 flex-shrink-0" />
-                  <span className="flex-1">{connectionsError}</span>
-                  <button type="button" onClick={() => setConnectionsError(null)}>
+                  <span className="flex-1">{channelError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setChannelError(null)}
+                    style={{ color: "#f87171" }}
+                  >
                     <X size={14} />
                   </button>
                 </div>
@@ -1788,23 +1734,37 @@ export function SettingsPage() {
               <p className="text-sm" style={{ color: "rgba(255,255,255,0.4)" }}>
                 Connect external services. Credentials are encrypted and stored only on your device.
               </p>
-              {CONN_ORDER.map((provider) => (
-                <ProviderCard
-                  key={provider}
-                  provider={provider}
-                  meta={CONN_PROVIDERS[provider]}
-                  connection={connections.find((c) => c.provider === provider)}
-                  appCfg={settings?.connections?.[provider]}
-                  onConnect={handleConnectOAuth}
-                  onDisconnect={handleDisconnect}
-                  onSaveCredentials={handleSaveCredentials}
-                  onSaveToken={handleSaveTelegramToken}
-                />
-              ))}
+              <div
+                className="grid gap-3"
+                style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}
+              >
+                {channels.map((channel) => {
+                  const connection = channelAccounts.find((c) => c.provider === channel.id);
+                  return (
+                    <ChannelCard
+                      key={channel.id}
+                      channel={channel}
+                      connection={connection}
+                      onConnect={() => setChannelModal(channel)}
+                      onDisconnect={() => {
+                        void handleChannelDisconnect(connection!);
+                      }}
+                    />
+                  );
+                })}
+              </div>
             </div>
           )}
-
         </div>
+
+        {/* Channel connect modal */}
+        {channelModal && (
+          <ChannelConnectModal
+            channel={channelModal}
+            onClose={() => setChannelModal(null)}
+            onConnected={handleChannelConnected}
+          />
+        )}
 
         {/* ASR setup modal — anchored to bottom-right so popover appears above */}
         {showAsrSetup && (

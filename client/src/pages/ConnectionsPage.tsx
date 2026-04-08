@@ -1,402 +1,121 @@
-import {
-  ArrowLeft,
-  Check,
-  Eye,
-  EyeOff,
-  Github,
-  Link2,
-  Linkedin,
-  Mail,
-  MessageSquare,
-  Hash,
-  Send,
-  Twitter,
-  Trash2,
-  X,
-} from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ArrowLeft, Check, Hash, MessageCircle, MessageSquare, Send, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
-import type { AppSettings, OAuthConnection, OAuthProvider } from "../lib/types";
+import { notificationStore } from "../lib/notification-store";
+import type {
+  AppNotification,
+  ChannelDescriptor,
+  ChannelConnection,
+  ChannelId,
+  ChannelSenderPermission,
+} from "../lib/types";
 
-const MASKED = "__masked__";
-
-// ─── Provider metadata ────────────────────────────────────────────────────────
-
-interface ProviderMeta {
-  label: string;
-  description: string;
-  icon: React.ReactNode;
-  color: string;
-  authType: "oauth" | "token";
-  tokenLabel?: string;
-  tokenPlaceholder?: string;
-  needsClientCredentials: boolean;
-  docsUrl: string;
-}
+// ─── Client-side icon map (React components can't come from the server) ────────
 
 const iconSize = 20;
 
-const PROVIDERS: Record<OAuthProvider, ProviderMeta> = {
-  github: {
-    label: "GitHub",
-    description: "Repositories, issues, pull requests",
-    icon: <Github size={iconSize} />,
-    color: "#e2e8f0",
-    authType: "oauth",
-    needsClientCredentials: true,
-    docsUrl: "https://docs.github.com/apps/oauth-apps/building-oauth-apps",
-  },
-  google: {
-    label: "Google / Gmail",
-    description: "Email, calendar, Google services",
-    icon: <Mail size={iconSize} />,
-    color: "#ea4335",
-    authType: "oauth",
-    needsClientCredentials: true,
-    docsUrl: "https://console.cloud.google.com/apis/credentials",
-  },
-  discord: {
-    label: "Discord",
-    description: "Servers, channels, messages",
-    icon: <MessageSquare size={iconSize} />,
-    color: "#5865f2",
-    authType: "oauth",
-    needsClientCredentials: true,
-    docsUrl: "https://discord.com/developers/applications",
-  },
-  slack: {
-    label: "Slack",
-    description: "Workspaces, channels, messages",
-    icon: <Hash size={iconSize} />,
-    color: "#4a154b",
-    authType: "oauth",
-    needsClientCredentials: true,
-    docsUrl: "https://api.slack.com/apps",
-  },
-  twitter: {
-    label: "Twitter / X",
-    description: "Tweets, followers, timelines",
-    icon: <Twitter size={iconSize} />,
-    color: "#1d9bf0",
-    authType: "oauth",
-    needsClientCredentials: true,
-    docsUrl: "https://developer.twitter.com/en/portal/dashboard",
-  },
-  linkedin: {
-    label: "LinkedIn",
-    description: "Profile, posts, connections",
-    icon: <Linkedin size={iconSize} />,
-    color: "#0a66c2",
-    authType: "oauth",
-    needsClientCredentials: true,
-    docsUrl: "https://www.linkedin.com/developers/apps",
-  },
-  telegram: {
-    label: "Telegram",
-    description: "Bot messages, channels",
-    icon: <Send size={iconSize} />,
-    color: "#0088cc",
-    authType: "token",
-    tokenLabel: "Bot Token",
-    tokenPlaceholder: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-    needsClientCredentials: false,
-    docsUrl: "https://core.telegram.org/bots#how-do-i-create-a-bot",
-  },
+const CHANNEL_ICONS: Record<ChannelId, React.ReactNode> = {
+  telegram: <Send size={iconSize} />,
+  whatsapp: <MessageSquare size={iconSize} />,
+  discord: <Hash size={iconSize} />,
+  slack: <MessageCircle size={iconSize} />,
 };
 
-const PROVIDER_ORDER: OAuthProvider[] = [
-  "github",
-  "google",
-  "discord",
-  "slack",
-  "twitter",
-  "linkedin",
-  "telegram",
-];
+// ─── Channel card ─────────────────────────────────────────────────────────────
 
-// ─── Shared styles ────────────────────────────────────────────────────────────
-
-const inputClass = "w-full px-3 py-2 text-sm rounded-xl outline-none transition-colors";
-const inputStyle = {
-  background: "rgba(255,255,255,0.06)",
-  border: "1px solid rgba(255,255,255,0.1)",
-  color: "rgba(255,255,255,0.85)",
-};
-
-// ─── Provider card ────────────────────────────────────────────────────────────
-
-interface ProviderCardProps {
-  provider: OAuthProvider;
-  meta: ProviderMeta;
-  connection: OAuthConnection | undefined;
-  appCfg: { clientId: string; clientSecret: string } | undefined;
-  onConnect(provider: OAuthProvider): void;
-  onDisconnect(connection: OAuthConnection): void;
-  onSaveCredentials(provider: OAuthProvider, clientId: string, clientSecret: string): void;
-  onSaveToken(provider: OAuthProvider, token: string): void;
+interface ChannelCardProps {
+  channel: ChannelDescriptor;
+  connection: ChannelConnection | undefined;
+  onConnect(provider: ChannelId): void;
+  onDisconnect(connection: ChannelConnection): void;
 }
 
-function ProviderCard({
-  provider,
-  meta,
-  connection,
-  appCfg,
-  onConnect,
-  onDisconnect,
-  onSaveCredentials,
-  onSaveToken,
-}: ProviderCardProps) {
-  const [expanded, setExpanded] = useState(false);
-  const [clientId, setClientId] = useState(appCfg?.clientId ?? "");
-  const [clientSecret, setClientSecret] = useState(appCfg?.clientSecret ?? "");
-  const [showSecret, setShowSecret] = useState(false);
-  const [tokenValue, setTokenValue] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-
-  // Sync if parent updates (e.g. after save)
-  useEffect(() => {
-    setClientId(appCfg?.clientId ?? "");
-    setClientSecret(appCfg?.clientSecret ?? "");
-  }, [appCfg]);
-
-  const configured = meta.authType === "token" ? true : !!(appCfg?.clientId && appCfg.clientSecret);
+function ChannelCard({ channel, connection, onConnect, onDisconnect }: ChannelCardProps) {
   const connected = !!connection;
-
-  async function handleSaveCredentials() {
-    setSaving(true);
-    try {
-      await onSaveCredentials(provider, clientId, clientSecret);
-      setExpanded(false);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleConnect() {
-    setConnecting(true);
-    try {
-      await onConnect(provider);
-    } finally {
-      setConnecting(false);
-    }
-  }
-
-  async function handleSaveToken() {
-    if (!tokenValue.trim()) return;
-    setSaving(true);
-    try {
-      await onSaveToken(provider, tokenValue.trim());
-      setTokenValue("");
-    } finally {
-      setSaving(false);
-    }
-  }
 
   return (
     <div
-      className="rounded-2xl p-5 flex flex-col gap-4"
-      style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+      className="rounded-2xl flex flex-col overflow-hidden transition-all"
+      style={{
+        background: "rgba(255,255,255,0.04)",
+        border: connected ? `1px solid ${channel.color}44` : "1px solid rgba(255,255,255,0.08)",
+      }}
     >
-      {/* Header row */}
-      <div className="flex items-center gap-3">
-        <div
-          className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-          style={{ background: `${meta.color}22`, color: meta.color }}
-        >
-          {meta.icon}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold" style={{ color: "rgba(255,255,255,0.9)" }}>
-              {meta.label}
-            </span>
-            {connected && (
-              <span
-                className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full"
-                style={{ background: "rgba(34,197,94,0.15)", color: "#4ade80" }}
-              >
-                <Check size={10} />
-                Connected
-              </span>
-            )}
+      {/* Color accent bar */}
+      <div
+        className="h-1 w-full"
+        style={{ background: connected ? channel.color : "rgba(255,255,255,0.06)" }}
+      />
+
+      <div className="p-5 flex flex-col gap-4 flex-1">
+        {/* Icon + status */}
+        <div className="flex items-start justify-between gap-2">
+          <div
+            className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
+            style={{ background: `${channel.color}18`, color: channel.color }}
+          >
+            {CHANNEL_ICONS[channel.id]}
           </div>
-          <p className="text-xs mt-0.5" style={{ color: "rgba(255,255,255,0.4)" }}>
+          {connected && (
+            <span
+              className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full flex-shrink-0"
+              style={{
+                background: "rgba(34,197,94,0.12)",
+                color: "#4ade80",
+                border: "1px solid rgba(34,197,94,0.2)",
+              }}
+            >
+              <Check size={9} />
+              Connected
+            </span>
+          )}
+        </div>
+
+        {/* Label + subtext */}
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-semibold" style={{ color: "rgba(255,255,255,0.9)" }}>
+            {channel.label}
+          </span>
+          <p className="text-xs leading-relaxed" style={{ color: "rgba(255,255,255,0.4)" }}>
             {connection
-              ? connection.accountName ?? connection.accountEmail ?? connection.accountId
-              : meta.description}
+              ? (connection.accountName ?? connection.accountEmail ?? connection.accountId)
+              : channel.description}
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+
+        {/* Action row */}
+        <div className="mt-auto flex items-center gap-2">
           {connected ? (
             <button
               type="button"
               onClick={() => onDisconnect(connection!)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors"
+              className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors"
               style={{
-                background: "rgba(239,68,68,0.12)",
+                background: "rgba(239,68,68,0.1)",
                 color: "#f87171",
-                border: "1px solid rgba(239,68,68,0.2)",
+                border: "1px solid rgba(239,68,68,0.18)",
               }}
             >
-              <Trash2 size={12} />
+              <Trash2 size={11} />
               Disconnect
             </button>
-          ) : meta.authType === "oauth" ? (
-            <>
-              {!configured && (
-                <button
-                  type="button"
-                  onClick={() => setExpanded((v) => !v)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors"
-                  style={{
-                    background: "rgba(255,255,255,0.07)",
-                    color: "rgba(255,255,255,0.7)",
-                    border: "1px solid rgba(255,255,255,0.1)",
-                  }}
-                >
-                  Setup
-                </button>
-              )}
-              {configured && (
-                <button
-                  type="button"
-                  onClick={handleConnect}
-                  disabled={connecting}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors disabled:opacity-50"
-                  style={{
-                    background: `${meta.color}22`,
-                    color: meta.color,
-                    border: `1px solid ${meta.color}44`,
-                  }}
-                >
-                  <Link2 size={12} />
-                  {connecting ? "Opening…" : "Connect"}
-                </button>
-              )}
-              {appCfg && (
-                <button
-                  type="button"
-                  onClick={() => setExpanded((v) => !v)}
-                  className="p-1.5 rounded-lg transition-colors"
-                  style={{
-                    color: "rgba(255,255,255,0.4)",
-                    background: expanded ? "rgba(255,255,255,0.08)" : "transparent",
-                  }}
-                  title="Edit credentials"
-                >
-                  {expanded ? <X size={14} /> : <Eye size={14} />}
-                </button>
-              )}
-            </>
-          ) : null}
+          ) : (
+            <button
+              type="button"
+              onClick={() => onConnect(channel.id)}
+              className="flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              style={{
+                background: `${channel.color}20`,
+                color: channel.color,
+                border: `1px solid ${channel.color}40`,
+              }}
+            >
+              Connect
+            </button>
+          )}
         </div>
       </div>
-
-      {/* OAuth credentials form */}
-      {meta.authType === "oauth" && expanded && (
-        <div className="flex flex-col gap-3 pt-1">
-          <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
-            Register an OAuth app at your provider and enter the credentials below. Use{" "}
-            <code
-              className="px-1 py-0.5 rounded text-xs"
-              style={{ background: "rgba(255,255,255,0.08)" }}
-            >
-              http://127.0.0.1:3001/api/connections/{provider}/callback
-            </code>{" "}
-            as the redirect URI.{" "}
-            <a
-              href={meta.docsUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-              style={{ color: meta.color }}
-            >
-              Docs
-            </a>
-          </p>
-          <input
-            className={inputClass}
-            style={inputStyle}
-            placeholder="Client ID"
-            value={clientId}
-            onChange={(e) => setClientId(e.target.value)}
-          />
-          <div className="relative">
-            <input
-              className={inputClass}
-              style={{ ...inputStyle, paddingRight: "2.5rem" }}
-              type={showSecret ? "text" : "password"}
-              placeholder={clientSecret === MASKED ? "••••••••" : "Client Secret"}
-              value={clientSecret === MASKED ? "" : clientSecret}
-              onChange={(e) => setClientSecret(e.target.value)}
-            />
-            <button
-              type="button"
-              className="absolute right-2.5 top-1/2 -translate-y-1/2"
-              style={{ color: "rgba(255,255,255,0.4)" }}
-              onClick={() => setShowSecret((v) => !v)}
-            >
-              {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
-          </div>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={handleSaveCredentials}
-              disabled={saving || !clientId.trim()}
-              className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
-              style={{ background: "rgba(255,255,255,0.12)", color: "rgba(255,255,255,0.85)" }}
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setExpanded(false)}
-              className="px-4 py-1.5 rounded-lg text-xs transition-colors"
-              style={{ color: "rgba(255,255,255,0.4)" }}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Telegram token form */}
-      {meta.authType === "token" && !connected && (
-        <div className="flex flex-col gap-3 pt-1">
-          <p className="text-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
-            Create a bot via{" "}
-            <a
-              href={meta.docsUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-              style={{ color: meta.color }}
-            >
-              @BotFather
-            </a>{" "}
-            and paste the token below.
-          </p>
-          <input
-            className={inputClass}
-            style={inputStyle}
-            placeholder={meta.tokenPlaceholder}
-            value={tokenValue}
-            onChange={(e) => setTokenValue(e.target.value)}
-          />
-          <button
-            type="button"
-            onClick={handleSaveToken}
-            disabled={saving || !tokenValue.trim()}
-            className="self-start px-4 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
-            style={{ background: `${meta.color}22`, color: meta.color, border: `1px solid ${meta.color}44` }}
-          >
-            {saving ? "Validating…" : "Connect"}
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -405,88 +124,130 @@ function ProviderCard({
 
 export function ConnectionsPage() {
   const navigate = useNavigate();
-  const [connections, setConnections] = useState<OAuthConnection[]>([]);
-  const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const popupRef = useRef<Window | null>(null);
+  const [channels, setChannels] = useState<ChannelDescriptor[]>([]);
+  const [connections, setConnections] = useState<ChannelConnection[]>([]);
+  const [senderPermissions, setSenderPermissions] = useState<ChannelSenderPermission[]>([]);
+  const [pendingNotifications, setPendingNotifications] = useState<AppNotification[]>([]);
 
   useEffect(() => {
-    void Promise.all([api.listConnections(), api.getSettings()]).then(([conns, cfg]) => {
+    void notificationStore.init();
+    void Promise.all([
+      api.listChannels(),
+      api.listChannelAccounts(),
+      api.listChannelSenders(),
+      api.listNotifications({ limit: 100 }),
+    ]).then(([chans, conns, senders, notifications]) => {
+      setChannels(chans);
       setConnections(conns);
-      setSettings(cfg);
+      setSenderPermissions(senders);
+      setPendingNotifications(
+        notifications.filter((notification) => notification.type === "channel_permission_request")
+      );
     });
   }, []);
 
-  // Listen for OAuth popup postMessages
   useEffect(() => {
-    function onMessage(event: MessageEvent) {
-      if (event.origin !== window.location.origin) return;
-      const data = event.data as { type?: string; provider?: string; message?: string };
-      if (data.type === "oauth_success") {
-        popupRef.current?.close();
-        void api.listConnections().then(setConnections);
-      } else if (data.type === "oauth_error") {
-        popupRef.current?.close();
-        setError(data.message ?? "OAuth failed");
-      }
-    }
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
+    return notificationStore.subscribe((items) => {
+      setPendingNotifications(
+        items.filter((notification) => notification.type === "channel_permission_request")
+      );
+    });
   }, []);
 
-  async function handleConnect(provider: OAuthProvider) {
-    setError(null);
-    try {
-      const { authUrl } = await api.startOAuthFlow(provider);
-      const popup = window.open(authUrl, `oauth_${provider}`, "width=600,height=700,left=200,top=100");
-      if (!popup) {
-        setError("Popup was blocked. Please allow popups for this page and try again.");
-        return;
-      }
-      popupRef.current = popup;
-    } catch (err) {
-      setError((err as Error).message);
-    }
+  async function handleConnect(_provider: ChannelId) {
+    // Connect is handled via the Settings > Channels tab
+    navigate("/settings?tab=channels");
   }
 
-  async function handleDisconnect(connection: OAuthConnection) {
-    await api.deleteConnection(connection.id);
+  async function handleDisconnect(connection: ChannelConnection) {
+    await api.disconnectChannel(connection.id);
     setConnections((prev) => prev.filter((c) => c.id !== connection.id));
+    setSenderPermissions((prev) => prev.filter((entry) => entry.connectionId !== connection.id));
   }
 
-  async function handleSaveCredentials(
-    provider: OAuthProvider,
-    clientId: string,
-    clientSecret: string
+  async function updateSenderPermission(
+    entry: ChannelSenderPermission,
+    status: "approved" | "blocked"
   ) {
-    if (!settings) return;
-    const secretToSend =
-      clientSecret === "" && settings.connections?.[provider]?.clientSecret === MASKED
-        ? MASKED
-        : clientSecret;
-    const updated: AppSettings = {
-      ...settings,
-      connections: {
-        ...settings.connections,
-        [provider]: { clientId, clientSecret: secretToSend },
-      },
-    };
-    const saved = await api.saveSettings(updated);
-    setSettings(saved);
+    const updated = await api.setChannelSenderPermission({
+      connectionId: entry.connectionId,
+      channelId: entry.channelId,
+      senderId: entry.senderId,
+      senderName: entry.senderName,
+      status,
+    });
+    setSenderPermissions((prev) => [
+      updated,
+      ...prev.filter(
+        (current) =>
+          !(current.connectionId === updated.connectionId && current.senderId === updated.senderId)
+      ),
+    ]);
   }
 
-  async function handleSaveToken(provider: OAuthProvider, token: string) {
-    setError(null);
-    try {
-      const conn = await api.saveTelegramToken(token);
-      setConnections((prev) => [...prev.filter((c) => c.provider !== provider), conn]);
-    } catch (err) {
-      setError((err as Error).message);
+  async function resolvePendingNotification(
+    notification: AppNotification,
+    status: "approved" | "blocked"
+  ) {
+    const metadata = notification.metadata;
+    if (
+      !metadata ||
+      typeof metadata.connectionId !== "string" ||
+      typeof metadata.channelId !== "string" ||
+      typeof metadata.senderId !== "string"
+    ) {
+      return;
     }
+
+    const updated = await api.setChannelSenderPermission({
+      connectionId: metadata.connectionId,
+      channelId: metadata.channelId as ChannelId,
+      senderId: metadata.senderId,
+      senderName: typeof metadata.senderName === "string" ? metadata.senderName : null,
+      status,
+    });
+
+    notificationStore.remove(notification.id);
+    setSenderPermissions((prev) => [
+      updated,
+      ...prev.filter(
+        (current) =>
+          !(current.connectionId === updated.connectionId && current.senderId === updated.senderId)
+      ),
+    ]);
   }
+
+  async function resetSenderPermission(entry: ChannelSenderPermission) {
+    await api.deleteChannelSenderPermission(entry.connectionId, entry.senderId);
+    setSenderPermissions((prev) =>
+      prev.filter(
+        (current) =>
+          !(current.connectionId === entry.connectionId && current.senderId === entry.senderId)
+      )
+    );
+  }
+
+  const unresolvedPendingNotifications = pendingNotifications.filter((notification) => {
+    const metadata = notification.metadata;
+    if (
+      !metadata ||
+      typeof metadata.connectionId !== "string" ||
+      typeof metadata.senderId !== "string"
+    ) {
+      return false;
+    }
+
+    return !senderPermissions.some(
+      (entry) =>
+        entry.connectionId === metadata.connectionId && entry.senderId === metadata.senderId
+    );
+  });
 
   return (
-    <div className="flex flex-col h-full" style={{ background: "#0f0f11", color: "rgba(255,255,255,0.85)" }}>
+    <div
+      className="flex flex-col h-full"
+      style={{ background: "#0f0f11", color: "rgba(255,255,255,0.85)" }}
+    >
       {/* Header */}
       <div
         className="flex items-center gap-3 px-6 py-4 flex-shrink-0"
@@ -500,48 +261,218 @@ export function ConnectionsPage() {
         >
           <ArrowLeft size={18} />
         </button>
-        <h1 className="text-base font-semibold">Connections</h1>
+        <h1 className="text-base font-semibold">Channels</h1>
       </div>
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="max-w-2xl mx-auto flex flex-col gap-4">
-          {error && (
-            <div
-              className="flex items-start gap-2 px-4 py-3 rounded-xl text-sm"
-              style={{ background: "rgba(239,68,68,0.12)", color: "#f87171", border: "1px solid rgba(239,68,68,0.2)" }}
-            >
-              <X size={14} className="mt-0.5 flex-shrink-0" />
-              <span>{error}</span>
-              <button
-                type="button"
-                onClick={() => setError(null)}
-                className="ml-auto flex-shrink-0"
-                style={{ color: "#f87171" }}
-              >
-                <X size={14} />
-              </button>
-            </div>
-          )}
-
+        <div className="max-w-5xl mx-auto flex flex-col gap-6">
           <p className="text-sm" style={{ color: "rgba(255,255,255,0.4)" }}>
-            Connect external services. OAuth credentials are stored encrypted on your device and never
-            leave your machine.
+            Connect messaging channels. Tokens are encrypted on your device and never leave your
+            machine.
           </p>
 
-          {PROVIDER_ORDER.map((provider) => (
-            <ProviderCard
-              key={provider}
-              provider={provider}
-              meta={PROVIDERS[provider]}
-              connection={connections.find((c) => c.provider === provider)}
-              appCfg={settings?.connections?.[provider]}
-              onConnect={handleConnect}
-              onDisconnect={handleDisconnect}
-              onSaveCredentials={handleSaveCredentials}
-              onSaveToken={handleSaveToken}
-            />
-          ))}
+          <div
+            className="grid gap-4"
+            style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}
+          >
+            {channels.map((channel) => (
+              <ChannelCard
+                key={channel.id}
+                channel={channel}
+                connection={connections.find((c) => c.provider === channel.id)}
+                onConnect={handleConnect}
+                onDisconnect={handleDisconnect}
+              />
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold" style={{ color: "rgba(255,255,255,0.9)" }}>
+                Pending Requests
+              </h2>
+              <span className="text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
+                New senders wait here until you allow or block them.
+              </span>
+            </div>
+
+            <div
+              className="rounded-2xl overflow-hidden"
+              style={{
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.08)",
+              }}
+            >
+              {unresolvedPendingNotifications.length === 0 ? (
+                <div className="px-4 py-5 text-sm" style={{ color: "rgba(255,255,255,0.35)" }}>
+                  No pending sender approvals.
+                </div>
+              ) : (
+                <div className="divide-y" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
+                  {unresolvedPendingNotifications.map((notification) => {
+                    const metadata = notification.metadata as Record<string, unknown>;
+                    const channel = channels.find((item) => item.id === metadata.channelId);
+                    const connection = connections.find(
+                      (item) => item.id === metadata.connectionId
+                    );
+                    const senderName =
+                      typeof metadata.senderName === "string" && metadata.senderName.trim()
+                        ? metadata.senderName
+                        : String(metadata.senderId);
+                    return (
+                      <div key={notification.id} className="px-4 py-3 flex items-center gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div
+                            className="text-sm font-medium"
+                            style={{ color: "rgba(255,255,255,0.9)" }}
+                          >
+                            {senderName}
+                          </div>
+                          <div className="text-xs mt-1" style={{ color: "rgba(255,255,255,0.35)" }}>
+                            {channel?.label ?? String(metadata.channelId)}
+                            {" · "}
+                            {connection?.accountName ??
+                              connection?.accountId ??
+                              String(metadata.connectionId)}
+                            {" · "}
+                            {String(metadata.senderId)}
+                          </div>
+                          {typeof metadata.messagePreview === "string" &&
+                            metadata.messagePreview && (
+                              <div
+                                className="text-xs mt-1"
+                                style={{ color: "rgba(255,255,255,0.5)" }}
+                              >
+                                {metadata.messagePreview}
+                              </div>
+                            )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void resolvePendingNotification(notification, "approved")
+                            }
+                            className="px-3 py-1.5 rounded-lg text-xs"
+                            style={{ background: "rgba(34,197,94,0.12)", color: "#4ade80" }}
+                          >
+                            Allow
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void resolvePendingNotification(notification, "blocked")}
+                            className="px-3 py-1.5 rounded-lg text-xs"
+                            style={{ background: "rgba(239,68,68,0.12)", color: "#f87171" }}
+                          >
+                            Block
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold" style={{ color: "rgba(255,255,255,0.9)" }}>
+                Sender Permissions
+              </h2>
+              <span className="text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
+                First message from a new sender creates an approval request.
+              </span>
+            </div>
+
+            <div
+              className="rounded-2xl overflow-hidden"
+              style={{
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.08)",
+              }}
+            >
+              {senderPermissions.length === 0 ? (
+                <div className="px-4 py-5 text-sm" style={{ color: "rgba(255,255,255,0.35)" }}>
+                  No sender decisions yet.
+                </div>
+              ) : (
+                <div className="divide-y" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
+                  {senderPermissions.map((entry) => {
+                    const connection = connections.find((item) => item.id === entry.connectionId);
+                    const channel = channels.find((item) => item.id === entry.channelId);
+                    return (
+                      <div
+                        key={`${entry.connectionId}:${entry.senderId}`}
+                        className="px-4 py-3 flex items-center gap-3"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span
+                              className="text-sm font-medium"
+                              style={{ color: "rgba(255,255,255,0.9)" }}
+                            >
+                              {entry.senderName ?? entry.senderId}
+                            </span>
+                            <span
+                              className="text-[10px] px-2 py-0.5 rounded-full"
+                              style={{
+                                background:
+                                  entry.status === "approved"
+                                    ? "rgba(34,197,94,0.14)"
+                                    : "rgba(239,68,68,0.14)",
+                                color: entry.status === "approved" ? "#4ade80" : "#f87171",
+                              }}
+                            >
+                              {entry.status}
+                            </span>
+                          </div>
+                          <div className="text-xs mt-1" style={{ color: "rgba(255,255,255,0.35)" }}>
+                            {channel?.label ?? entry.channelId}
+                            {" · "}
+                            {connection?.accountName ?? connection?.accountId ?? entry.connectionId}
+                            {" · "}
+                            {entry.senderId}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void updateSenderPermission(entry, "approved")}
+                            className="px-3 py-1.5 rounded-lg text-xs"
+                            style={{ background: "rgba(34,197,94,0.12)", color: "#4ade80" }}
+                          >
+                            Allow
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void updateSenderPermission(entry, "blocked")}
+                            className="px-3 py-1.5 rounded-lg text-xs"
+                            style={{ background: "rgba(239,68,68,0.12)", color: "#f87171" }}
+                          >
+                            Block
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void resetSenderPermission(entry)}
+                            className="px-3 py-1.5 rounded-lg text-xs"
+                            style={{
+                              background: "rgba(255,255,255,0.08)",
+                              color: "rgba(255,255,255,0.65)",
+                            }}
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

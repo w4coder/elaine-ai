@@ -3,6 +3,11 @@ import type {
   AppSettings,
   AsrProvider,
   AuditLogEntry,
+  ChannelConnection,
+  ChannelDescriptor,
+  ChannelId,
+  ChannelSenderPermission,
+  ChannelSenderStatus,
   ChatPayload,
   ConversationDetail,
   ConversationSummary,
@@ -12,8 +17,6 @@ import type {
   MemoryEpisode,
   MemoryJob,
   MemoryNote,
-  OAuthConnection,
-  OAuthProvider,
   ScheduledJob,
   StreamHandlers,
   SystemInfo,
@@ -450,20 +453,69 @@ export const api = {
   resetAllData() {
     return request<void>("/api/reset", { method: "POST" });
   },
-  listConnections() {
-    return request<OAuthConnection[]>("/api/connections");
+  listChannels() {
+    return request<ChannelDescriptor[]>("/api/channels/registry");
   },
-  startOAuthFlow(provider: OAuthProvider) {
-    return request<{ authUrl: string }>(`/api/connections/${provider}/connect`, { method: "POST" });
+  listChannelAccounts() {
+    return request<ChannelConnection[]>("/api/channels/accounts");
   },
-  saveTelegramToken(token: string) {
-    return request<OAuthConnection>("/api/connections/telegram/token", {
-      method: "POST",
-      body: JSON.stringify({ token }),
+  listChannelSenders(connectionId?: string) {
+    const qs = connectionId ? `?${new URLSearchParams({ connectionId }).toString()}` : "";
+    return request<ChannelSenderPermission[]>(`/api/channels/senders${qs}`);
+  },
+  setChannelSenderPermission(payload: {
+    connectionId: string;
+    channelId: ChannelId;
+    senderId: string;
+    senderName?: string | null;
+    status: ChannelSenderStatus;
+  }) {
+    return request<ChannelSenderPermission>("/api/channels/senders", {
+      method: "PUT",
+      body: JSON.stringify(payload),
     });
   },
-  deleteConnection(id: string) {
-    return request<void>(`/api/connections/${id}`, { method: "DELETE" });
+  deleteChannelSenderPermission(connectionId: string, senderId: string) {
+    const qs = new URLSearchParams({ connectionId, senderId });
+    return request<void>(`/api/channels/senders?${qs.toString()}`, { method: "DELETE" });
+  },
+  connectChannel(channelId: ChannelId) {
+    return request<{ authUrl: string }>(`/api/channels/${channelId}/connect`, { method: "POST" });
+  },
+  connectWithToken(channelId: ChannelId, token: string, token2?: string) {
+    return request<ChannelConnection>(`/api/channels/${channelId}/token`, {
+      method: "POST",
+      body: JSON.stringify({ token, token2 }),
+    });
+  },
+
+  openWhatsAppQrStream(handlers: {
+    onQr(dataUrl: string): void;
+    onConnected(data: { connectionId: string; accountName: string }): void;
+    onError(message: string): void;
+  }): () => void {
+    const source = new EventSource("/api/channels/whatsapp/qr");
+    source.addEventListener("qr", (e) => {
+      const d = JSON.parse((e as MessageEvent).data) as { dataUrl: string };
+      handlers.onQr(d.dataUrl);
+    });
+    source.addEventListener("connected", (e) => {
+      const d = JSON.parse((e as MessageEvent).data) as {
+        connectionId: string;
+        accountName: string;
+      };
+      handlers.onConnected(d);
+      source.close();
+    });
+    source.addEventListener("error", (e) => {
+      const d = JSON.parse((e as MessageEvent).data) as { message: string };
+      handlers.onError(d.message);
+      source.close();
+    });
+    return () => source.close();
+  },
+  disconnectChannel(id: string) {
+    return request<void>(`/api/channels/accounts/${id}`, { method: "DELETE" });
   },
   async streamEphemeralChat(payload: EphemeralChatPayload, handlers: EphemeralStreamHandlers) {
     const response = await fetch("/api/chat/ephemeral", {

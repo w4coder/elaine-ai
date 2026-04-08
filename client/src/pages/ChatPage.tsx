@@ -9,10 +9,12 @@ import React, {
 import { useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
+  Bell,
   Brain,
   Calendar,
   ChevronUp,
   Ghost,
+  Link2,
   MessageSquare,
   MessageSquarePlus,
   PanelLeft,
@@ -33,6 +35,7 @@ import { useNotifications } from "../hooks/useNotifications";
 import { useScheduleNotifications } from "../hooks/useScheduleNotifications";
 import { usePendingInteractionNotifications } from "../hooks/usePendingInteractionNotifications";
 import { api } from "../lib/api";
+import { notificationStore } from "../lib/notification-store";
 import type {
   AppSettings,
   AskUserQuestion,
@@ -240,6 +243,13 @@ export function ChatPage() {
   const [activeScheduledJob, setActiveScheduledJob] = useState<ScheduledJob | null>(null);
   const [scheduledJobs, setScheduledJobs] = useState<ScheduledJob[]>([]);
   const [collapsedProfileMenuOpen, setCollapsedProfileMenuOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(() => notificationStore.unreadCount());
+
+  useEffect(() => {
+    return notificationStore.subscribe((items) =>
+      setUnreadCount(items.filter((n) => !n.read).length)
+    );
+  }, []);
   const [incognito, setIncognito] = useState(false);
   const [pendingConversationType, setPendingConversationType] = useState<"chat" | "schedule">(
     "chat"
@@ -1218,6 +1228,36 @@ export function ChatPage() {
                 >
                   <Calendar size={15} />
                   <span>Schedules</span>
+                </button>
+                <button
+                  className="sidebar__profile-menu-item"
+                  type="button"
+                  onClick={() => {
+                    setCollapsedProfileMenuOpen(false);
+                    navigate("/notifications");
+                  }}
+                >
+                  <Bell size={15} />
+                  <span>Notifications</span>
+                  {unreadCount > 0 && (
+                    <span
+                      className="ml-auto min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold flex items-center justify-center"
+                      style={{ background: "var(--accent)", color: "#fff" }}
+                    >
+                      {unreadCount > 99 ? "99+" : unreadCount}
+                    </span>
+                  )}
+                </button>
+                <button
+                  className="sidebar__profile-menu-item"
+                  type="button"
+                  onClick={() => {
+                    setCollapsedProfileMenuOpen(false);
+                    navigate("/channels");
+                  }}
+                >
+                  <Link2 size={15} />
+                  <span>Connections</span>
                 </button>
                 <button
                   className="sidebar__profile-menu-item"

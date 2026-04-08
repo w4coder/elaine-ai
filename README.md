@@ -110,17 +110,19 @@ The `/notifications` page provides a split-pane inbox: list on the left, detail 
 
 The browser will ask for notification permission on first load. Notifications are only delivered when permission is granted.
 
-### Connections
+### Channels
 
-Connect external services so the agent can act on your behalf. OAuth credentials are stored encrypted on your device and never leave your machine.
+Connect local messaging channels so Elaine can receive inbound messages and reply from your machine. Channel credentials are stored encrypted locally and never leave the device.
 
-- Supported providers: **GitHub**, **Google / Gmail**, **Discord**, **Slack**, **Twitter / X**, **LinkedIn**, **Telegram**
-- OAuth 2.0 with PKCE (Twitter) — standard authorization code flow for all other providers
-- Telegram connects via Bot Token instead of OAuth
-- Client credentials (Client ID + Secret) are entered once per provider and stored encrypted in settings
-- Connect / Disconnect flow opens a small popup; the main window is notified automatically on success
-- Redirect URI for all providers: `http://127.0.0.1:3001/api/connections/:provider/callback`
-- Accessible from the sidebar profile menu → **Connections**
+- Supported channels: **Telegram**, **WhatsApp**, **Discord**, **Slack**
+- Telegram, Discord, and Slack connect with locally validated bot tokens
+- WhatsApp connects through a QR-based local session bootstrap
+- Unknown senders are gated per sender before any inbound message is routed into an Elaine conversation
+- First inbound messages are queued until you explicitly approve or block the sender
+- Channel replies are plain-text only — remote senders do not get access to the local toolchain
+- Reconnecting an existing account restarts the runner with fresh credentials
+- Disconnect also removes queued sender requests, pending messages, approval notifications, and WhatsApp session state
+- Accessible from the sidebar profile menu → **Channels**
 
 ### Memory
 
@@ -230,6 +232,8 @@ CLIENT_ORIGIN=http://127.0.0.1:5173
 
 Provider profiles are configured inside the app and stored locally in SQLite.
 
+For local development, both `http://127.0.0.1:5173` and `http://localhost:5173` are accepted by the server CORS policy. When the built app is served by Fastify, the server's own origin is also accepted automatically.
+
 ---
 
 ## Tested models
@@ -265,8 +269,8 @@ server/       Fastify API
   src/
     db/         SQLite schema, migrations, repository
     providers/  OpenAI-compatible, Ollama, vLLM adapters
-    routes/     REST + SSE endpoints (chat, notifications, connections, …)
-    services/   Chat, title, scheduled job runner, schedule parser, OAuth manager
+    routes/     REST + SSE endpoints (chat, notifications, channels, …)
+    services/   Chat, title, scheduled job runner, channel access, notification bus
     skills/     Agent skill implementations
     utils/      Constants, system prompts
 docs/         Architecture and design notes
@@ -327,10 +331,11 @@ npm run format       # Prettier
 
 - [ ] **MCP (Model Context Protocol)** — connect any MCP server as a first-class tool source; auto-discover tools and resources from running MCP processes
 - [ ] Social integrations: Twitter / X, LinkedIn, Mastodon — post, search, fetch threads
-- [ ] Messaging: Slack, Discord, Telegram — read channels, send messages, react to mentions
+- [x] Messaging channel foundation — Slack, Discord, Telegram, and WhatsApp can connect locally, receive inbound messages, and route replies back through Elaine
+- [ ] Messaging channel polish — richer message types, mention-specific routing, reactions, and deeper thread awareness
 - [ ] Productivity: Notion, Obsidian, Linear, GitHub Issues — create notes, manage tasks, file bugs
 - [ ] Communication: email sending via SMTP, calendar invites
-- [x] **OAuth flow inside the app for cloud service connections** — GitHub, Google, Discord, Slack, Twitter/X, LinkedIn, Telegram; credentials encrypted at rest
+- [x] **Local messaging channel setup inside the app** — Telegram, WhatsApp, Discord, and Slack can be connected and managed without leaving Elaine; credentials are stored encrypted at rest
 - [ ] Per-integration permission scopes — read-only by default, write requires explicit opt-in
 
 ### End-to-End Security
@@ -338,6 +343,9 @@ npm run format       # Prettier
 - [ ] **Local encryption at rest** — SQLite database encrypted with SQLCipher; key derived from a user passphrase
 - [ ] **Transport security** — enforce HTTPS even for localhost; self-signed cert generator on first run
 - [ ] **Secrets vault** — API keys stored encrypted, never written to plain-text config files
+- [x] **Secure channel communication gate** — unknown Slack, Discord, Telegram, and WhatsApp senders do not enter a conversation automatically; approval happens per sender, and first messages stay queued until approved
+- [x] **Encrypted channel credentials** — bot tokens, app tokens, and channel-linked OAuth secrets are stored encrypted locally and masked when read back through the API
+- [x] **Isolated WhatsApp sessions** — each WhatsApp connection keeps its own local session state and reconnect lifecycle instead of sharing a global auth context
 - [x] **Sandboxed skill execution** — `shell_exec` and `code_exec` run inside a restricted container or OS sandbox (nsjail / Docker)
 - [x] **Skill permission model** — each skill requires an explicit capability grant; three-mode UI (Allow once / Allow in thread / Deny); task mode no longer auto-grants
 - [x] **Audit log** — tamper-evident HMAC-signed append-only log of every tool call, argument, and result
@@ -350,15 +358,27 @@ npm run format       # Prettier
 
 ### Unreleased
 
-#### Connections
+#### Channels
 
-- New `/connections` page — manage OAuth connections to external services (GitHub, Google/Gmail, Discord, Slack, Twitter/X, LinkedIn, Telegram)
-- OAuth 2.0 authorization code flow with PKCE support (Twitter); bot token flow for Telegram
-- Client credentials (Client ID + Secret) stored encrypted in app settings; secrets are masked when read back from the server
-- OAuth popup opens in a small browser window; parent page receives a `postMessage` on success or error
-- `oauth_connections` database table — stores provider, account identity, encrypted access/refresh tokens, scopes, and expiry
+- New `/channels` flow for local messaging integrations: Telegram, WhatsApp, Discord, and Slack
+- Token-based setup for Telegram, Discord, and Slack; QR-based setup for WhatsApp via a local session handshake
+- Unknown channel senders are gated per sender before any inbound message is routed into an Elaine conversation
+- First inbound messages are persisted as pending until approval, then replayed through the normal routing pipeline
+- Channel credentials are validated before runner startup and stored encrypted locally; secrets remain masked in API reads
+- WhatsApp sessions are isolated per connection and reconnect automatically after the normal post-pairing restart
+- Reconnecting a stored channel account now restarts the active runner with the fresh credentials immediately
+- Disconnecting a channel now cleans sender permissions, pending inbound messages, queued approval notifications, conversation links, and local WhatsApp session state
+- Channel-originated messages now stay text-only and do not expose local agent tools such as shell, file, or web execution
+
+#### Local Dev
+
+- Server CORS now accepts both `127.0.0.1` and `localhost` local dev origins, plus the Fastify-served app origin for production-style local runs
+
+#### Notifications & Inbox
+
 - **Notifications page** (`/notifications`) — persistent split-pane inbox backed by the `app_notifications` database table
 - Mark individual notifications read/unread, delete by row or from the detail view, open linked conversation
+- Channel approval notifications can be resolved directly from the inbox or the `/channels` page
 - Unread badge on the sidebar profile menu Notifications entry, updated in real-time via store subscription
 - Notification store bootstraps from the server on first load and syncs read/delete operations back via REST
 

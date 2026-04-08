@@ -7,12 +7,15 @@ import { notifyMemoryOfMessage } from "../memory/index.js";
 import type {
   AppNotification,
   AppSettings,
+  ChannelConnection,
+  ChannelId,
+  PendingChannelMessage,
+  ChannelSenderPermission,
+  ChannelSenderStatus,
   ConversationDetail,
   ConversationRecord,
   ConversationSummary,
   MessageRecord,
-  OAuthConnection,
-  OAuthProvider,
   PendingInteraction,
   ProviderType,
   ScheduledJob,
@@ -44,6 +47,15 @@ interface ConversationSummaryRow extends ConversationRow {
   preview: string;
   message_count: number | string;
   last_message_at: string | null;
+}
+
+interface ConversationSearchRow {
+  conversation_id: string;
+  title: string;
+  updated_at: string;
+  message_id: string;
+  role: string;
+  content: string;
 }
 
 interface MessageRow {
@@ -122,11 +134,18 @@ export function getSettings(): AppSettings {
     saveSettings(defaults);
     return defaults;
   }
-  const decryptedConnections: AppSettings["connections"] = raw.connections
+  // Migrate legacy `connections` field → `channels`
+  const rawChannels =
+    raw.channels ??
+    ((raw as unknown as Record<string, unknown>)["connections"] as AppSettings["channels"]);
+  const decryptedChannels: AppSettings["channels"] = rawChannels
     ? Object.fromEntries(
-        Object.entries(raw.connections).map(([provider, cfg]) => [
-          provider,
-          { ...cfg, clientSecret: cfg.clientSecret ? decryptApiKey(cfg.clientSecret) : cfg.clientSecret },
+        Object.entries(rawChannels).map(([id, cfg]) => [
+          id,
+          {
+            ...cfg,
+            clientSecret: cfg.clientSecret ? decryptApiKey(cfg.clientSecret) : cfg.clientSecret,
+          },
         ])
       )
     : undefined;
@@ -136,7 +155,7 @@ export function getSettings(): AppSettings {
       ...p,
       apiKey: p.apiKey ? decryptApiKey(p.apiKey) : p.apiKey,
     })),
-    connections: decryptedConnections,
+    channels: decryptedChannels,
   };
 }
 
@@ -145,10 +164,10 @@ export function getSettings(): AppSettings {
  */
 export function getSettingsForClient(): AppSettings {
   const settings = getSettings();
-  const maskedConnections: AppSettings["connections"] = settings.connections
+  const maskedChannels: AppSettings["channels"] = settings.channels
     ? Object.fromEntries(
-        Object.entries(settings.connections).map(([provider, cfg]) => [
-          provider,
+        Object.entries(settings.channels).map(([id, cfg]) => [
+          id,
           { ...cfg, clientSecret: cfg.clientSecret ? MASKED : cfg.clientSecret },
         ])
       )
@@ -159,7 +178,7 @@ export function getSettingsForClient(): AppSettings {
       ...p,
       apiKey: p.apiKey ? MASKED : p.apiKey,
     })),
-    connections: maskedConnections,
+    channels: maskedChannels,
   };
 }
 
@@ -184,23 +203,32 @@ export function saveSettings(incoming: AppSettings): AppSettings {
     return { ...p, apiKey };
   });
 
-  // Handle connection clientSecrets (same MASKED pattern as apiKey)
-  const processedConnections: AppSettings["connections"] = incoming.connections
+  // Handle channel clientSecrets (same MASKED pattern as apiKey)
+  const processedChannels: AppSettings["channels"] = incoming.channels
     ? Object.fromEntries(
-        Object.entries(incoming.connections).map(([provider, cfg]) => {
-          const existingSecret = existing?.connections?.[provider as OAuthProvider]?.clientSecret;
+        Object.entries(incoming.channels).map(([id, cfg]) => {
+          const legacyConnections = (existing as Record<string, unknown> | null)?.[
+            "connections"
+          ] as AppSettings["channels"] | undefined;
+          const existingSecret =
+            existing?.channels?.[id as ChannelId]?.clientSecret ??
+            legacyConnections?.[id as ChannelId]?.clientSecret;
           let clientSecret = cfg.clientSecret;
           if (clientSecret === MASKED) {
             clientSecret = existingSecret ?? "";
           } else if (clientSecret && !isEncrypted(clientSecret)) {
             clientSecret = encryptApiKey(clientSecret);
           }
-          return [provider, { ...cfg, clientSecret }];
+          return [id, { ...cfg, clientSecret }];
         })
       )
-    : incoming.connections;
+    : incoming.channels;
 
-  const toStore: AppSettings = { ...incoming, profiles: processedProfiles, connections: processedConnections };
+  const toStore: AppSettings = {
+    ...incoming,
+    profiles: processedProfiles,
+    channels: processedChannels,
+  };
 
   db.prepare(
     `INSERT INTO settings (key, value) VALUES (?, ?)
@@ -591,6 +619,113 @@ export function listMessages(conversationId: string): MessageRecord[] {
   return rows.map(mapMessageRow);
 }
 
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+function summarizeSnippet(content: string, query: string): string {
+  const compact = content.replace(/\s+/g, " ").trim();
+  if (compact.length <= 220) {
+    return compact;
+  }
+
+  const queryIndex = compact.toLowerCase().indexOf(query);
+  if (queryIndex < 0) {
+    return `${compact.slice(0, 217)}...`;
+  }
+
+  const start = Math.max(0, queryIndex - 80);
+  const end = Math.min(compact.length, queryIndex + 140);
+  const prefix = start > 0 ? "..." : "";
+  const suffix = end < compact.length ? "..." : "";
+  return `${prefix}${compact.slice(start, end).trim()}${suffix}`;
+}
+
+function scoreConversationSearchRow(
+  row: ConversationSearchRow,
+  query: string,
+  terms: string[]
+): number {
+  const title = row.title.toLowerCase();
+  const content = row.content.toLowerCase();
+
+  let score = 0;
+  if (title.includes(query)) score += 1.2;
+  if (content.includes(query)) score += 1.5;
+
+  for (const term of terms) {
+    if (title.includes(term)) score += 0.25;
+    if (content.includes(term)) score += 0.15;
+  }
+
+  const ageDays = Math.max(0, (Date.now() - new Date(row.updated_at).getTime()) / 86_400_000);
+  score += Math.exp(-ageDays / 45) * 0.2;
+
+  return score;
+}
+
+export function listConversationSearchResults(
+  query: string,
+  limit: number = 5
+): Array<{
+  conversationId: string;
+  title: string;
+  updatedAt: string;
+  messageId: string;
+  role: "user" | "assistant";
+  snippet: string;
+  score: number;
+}> {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return [];
+  }
+
+  const terms = [...new Set(normalizedQuery.split(/\s+/).filter((term) => term.length >= 3))].slice(
+    0,
+    6
+  );
+  const searchTerms = [normalizedQuery, ...terms];
+  const clauses = searchTerms.map(
+    () => "(LOWER(c.title) LIKE ? ESCAPE '\\' OR LOWER(m.content) LIKE ? ESCAPE '\\')"
+  );
+  const params = searchTerms.flatMap((term) => {
+    const pattern = `%${escapeLike(term)}%`;
+    return [pattern, pattern];
+  });
+
+  const rows = db
+    .prepare(
+      `SELECT
+         c.id AS conversation_id,
+         c.title AS title,
+         c.updated_at AS updated_at,
+         m.id AS message_id,
+         m.role AS role,
+         m.content AS content
+       FROM messages m
+       JOIN conversations c ON c.id = m.conversation_id
+       WHERE m.role IN ('user', 'assistant')
+         AND (${clauses.join(" OR ")})
+       ORDER BY c.updated_at DESC, m.created_at DESC
+       LIMIT 200`
+    )
+    .all(...params) as ConversationSearchRow[];
+
+  return rows
+    .map((row) => ({
+      conversationId: row.conversation_id,
+      title: row.title,
+      updatedAt: row.updated_at,
+      messageId: row.message_id,
+      role: row.role as "user" | "assistant",
+      snippet: summarizeSnippet(row.content, normalizedQuery),
+      score: scoreConversationSearchRow(row, normalizedQuery, terms),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(1, Math.min(limit, 20)));
+}
+
 // ─── Scheduled Jobs ───────────────────────────────────────────────────────────
 
 interface ScheduledJobRow {
@@ -790,6 +925,7 @@ interface AppNotificationRow {
   title: string;
   body: string | null;
   target_url: string | null;
+  metadata: string | null;
   read: number;
   created_at: string;
 }
@@ -801,21 +937,29 @@ function mapNotificationRow(row: AppNotificationRow): AppNotification {
     title: row.title,
     body: row.body,
     targetUrl: row.target_url,
+    metadata: row.metadata ? (JSON.parse(row.metadata) as Record<string, unknown>) : null,
     read: row.read === 1,
     createdAt: row.created_at,
   };
 }
 
-export function listNotifications(opts?: { limit?: number; unreadOnly?: boolean }): AppNotification[] {
+export function listNotifications(opts?: {
+  limit?: number;
+  unreadOnly?: boolean;
+}): AppNotification[] {
   const limit = opts?.limit ?? 100;
   const rows = opts?.unreadOnly
-    ? db.prepare("SELECT * FROM app_notifications WHERE read = 0 ORDER BY created_at DESC LIMIT ?").all(limit)
+    ? db
+        .prepare("SELECT * FROM app_notifications WHERE read = 0 ORDER BY created_at DESC LIMIT ?")
+        .all(limit)
     : db.prepare("SELECT * FROM app_notifications ORDER BY created_at DESC LIMIT ?").all(limit);
   return (rows as AppNotificationRow[]).map(mapNotificationRow);
 }
 
 export function getNotification(id: string): AppNotification | null {
-  const row = db.prepare("SELECT * FROM app_notifications WHERE id = ?").get(id) as AppNotificationRow | undefined;
+  const row = db.prepare("SELECT * FROM app_notifications WHERE id = ?").get(id) as
+    | AppNotificationRow
+    | undefined;
   return row ? mapNotificationRow(row) : null;
 }
 
@@ -825,12 +969,210 @@ export function createNotification(data: {
   title: string;
   body?: string | null;
   targetUrl?: string | null;
+  metadata?: Record<string, unknown> | null;
 }): AppNotification {
   const now = nowIso();
   db.prepare(
-    "INSERT INTO app_notifications (id, type, title, body, target_url, read, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)"
-  ).run(data.id, data.type, data.title, data.body ?? null, data.targetUrl ?? null, now);
+    "INSERT INTO app_notifications (id, type, title, body, target_url, metadata, read, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)"
+  ).run(
+    data.id,
+    data.type,
+    data.title,
+    data.body ?? null,
+    data.targetUrl ?? null,
+    data.metadata ? JSON.stringify(data.metadata) : null,
+    now
+  );
   return getNotification(data.id)!;
+}
+
+interface ChannelSenderPermissionRow {
+  connection_id: string;
+  channel_id: string;
+  sender_id: string;
+  sender_name: string | null;
+  status: string;
+  decided_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapChannelSenderPermissionRow(row: ChannelSenderPermissionRow): ChannelSenderPermission {
+  return {
+    connectionId: row.connection_id,
+    channelId: row.channel_id as ChannelId,
+    senderId: row.sender_id,
+    senderName: row.sender_name,
+    status: row.status as ChannelSenderStatus,
+    decidedAt: row.decided_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+interface PendingChannelMessageRow {
+  id: string;
+  connection_id: string;
+  channel_id: string;
+  sender_id: string;
+  sender_name: string | null;
+  reply_target_id: string;
+  text: string;
+  created_at: string;
+}
+
+function mapPendingChannelMessageRow(row: PendingChannelMessageRow): PendingChannelMessage {
+  return {
+    id: row.id,
+    connectionId: row.connection_id,
+    channelId: row.channel_id as ChannelId,
+    senderId: row.sender_id,
+    senderName: row.sender_name,
+    replyTargetId: row.reply_target_id,
+    text: row.text,
+    createdAt: row.created_at,
+  };
+}
+
+export function listChannelSenderPermissions(connectionId?: string): ChannelSenderPermission[] {
+  const rows = connectionId
+    ? db
+        .prepare(
+          `SELECT * FROM channel_sender_permissions
+           WHERE connection_id = ?
+           ORDER BY updated_at DESC, sender_name COLLATE NOCASE ASC, sender_id ASC`
+        )
+        .all(connectionId)
+    : db
+        .prepare(
+          `SELECT * FROM channel_sender_permissions
+           ORDER BY updated_at DESC, sender_name COLLATE NOCASE ASC, sender_id ASC`
+        )
+        .all();
+
+  return (rows as ChannelSenderPermissionRow[]).map(mapChannelSenderPermissionRow);
+}
+
+export function getChannelSenderPermission(
+  connectionId: string,
+  senderId: string
+): ChannelSenderPermission | null {
+  const row = db
+    .prepare("SELECT * FROM channel_sender_permissions WHERE connection_id = ? AND sender_id = ?")
+    .get(connectionId, senderId) as ChannelSenderPermissionRow | undefined;
+  return row ? mapChannelSenderPermissionRow(row) : null;
+}
+
+export function upsertChannelSenderPermission(data: {
+  connectionId: string;
+  channelId: ChannelId;
+  senderId: string;
+  senderName: string | null;
+  status: ChannelSenderStatus;
+}): ChannelSenderPermission {
+  const now = nowIso();
+  const existing = getChannelSenderPermission(data.connectionId, data.senderId);
+  db.prepare(
+    `INSERT INTO channel_sender_permissions
+       (connection_id, channel_id, sender_id, sender_name, status, decided_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(connection_id, sender_id) DO UPDATE SET
+       sender_name = excluded.sender_name,
+       status = excluded.status,
+       decided_at = excluded.decided_at,
+       updated_at = excluded.updated_at`
+  ).run(
+    data.connectionId,
+    data.channelId,
+    data.senderId,
+    data.senderName,
+    data.status,
+    now,
+    existing?.createdAt ?? now,
+    now
+  );
+
+  return getChannelSenderPermission(data.connectionId, data.senderId)!;
+}
+
+export function deleteChannelSenderPermission(connectionId: string, senderId: string): void {
+  db.prepare(
+    "DELETE FROM channel_sender_permissions WHERE connection_id = ? AND sender_id = ?"
+  ).run(connectionId, senderId);
+}
+
+export function createPendingChannelMessage(data: {
+  id: string;
+  connectionId: string;
+  channelId: ChannelId;
+  senderId: string;
+  senderName: string | null;
+  replyTargetId: string;
+  text: string;
+  createdAt: string;
+}): PendingChannelMessage {
+  db.prepare(
+    `INSERT INTO channel_pending_messages
+       (id, connection_id, channel_id, sender_id, sender_name, reply_target_id, text, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    data.id,
+    data.connectionId,
+    data.channelId,
+    data.senderId,
+    data.senderName,
+    data.replyTargetId,
+    data.text,
+    data.createdAt
+  );
+
+  return {
+    id: data.id,
+    connectionId: data.connectionId,
+    channelId: data.channelId,
+    senderId: data.senderId,
+    senderName: data.senderName,
+    replyTargetId: data.replyTargetId,
+    text: data.text,
+    createdAt: data.createdAt,
+  };
+}
+
+export function listPendingChannelMessages(
+  connectionId: string,
+  senderId?: string
+): PendingChannelMessage[] {
+  const rows = senderId
+    ? db
+        .prepare(
+          `SELECT * FROM channel_pending_messages
+           WHERE connection_id = ? AND sender_id = ?
+           ORDER BY created_at ASC`
+        )
+        .all(connectionId, senderId)
+    : db
+        .prepare(
+          `SELECT * FROM channel_pending_messages
+           WHERE connection_id = ?
+           ORDER BY created_at ASC`
+        )
+        .all(connectionId);
+
+  return (rows as PendingChannelMessageRow[]).map(mapPendingChannelMessageRow);
+}
+
+export function deletePendingChannelMessage(id: string): void {
+  db.prepare("DELETE FROM channel_pending_messages WHERE id = ?").run(id);
+}
+
+export function deletePendingChannelMessagesForSender(
+  connectionId: string,
+  senderId: string
+): void {
+  db.prepare("DELETE FROM channel_pending_messages WHERE connection_id = ? AND sender_id = ?").run(
+    connectionId,
+    senderId
+  );
 }
 
 export function markNotificationRead(id: string, read = true): void {
@@ -850,13 +1192,15 @@ export function clearAllNotifications(): void {
 }
 
 export function getUnreadNotificationCount(): number {
-  const row = db.prepare("SELECT COUNT(*) as count FROM app_notifications WHERE read = 0").get() as { count: number };
+  const row = db
+    .prepare("SELECT COUNT(*) as count FROM app_notifications WHERE read = 0")
+    .get() as { count: number };
   return row.count;
 }
 
-// ─── OAuth Connections ────────────────────────────────────────────────────────
+// ─── Channel Connections ──────────────────────────────────────────────────────
 
-interface OAuthConnectionRow {
+interface ChannelConnectionRow {
   id: string;
   provider: string;
   account_id: string;
@@ -868,10 +1212,10 @@ interface OAuthConnectionRow {
   updated_at: string;
 }
 
-function mapOAuthConnectionRow(row: OAuthConnectionRow): OAuthConnection {
+function mapChannelConnectionRow(row: ChannelConnectionRow): ChannelConnection {
   return {
     id: row.id,
-    provider: row.provider as OAuthProvider,
+    provider: row.provider as ChannelId,
     accountId: row.account_id,
     accountName: row.account_name,
     accountEmail: row.account_email,
@@ -882,16 +1226,23 @@ function mapOAuthConnectionRow(row: OAuthConnectionRow): OAuthConnection {
   };
 }
 
-export function listOAuthConnections(): OAuthConnection[] {
+export function listChannelConnections(): ChannelConnection[] {
   const rows = db
     .prepare("SELECT * FROM oauth_connections ORDER BY provider, created_at ASC")
-    .all() as OAuthConnectionRow[];
-  return rows.map(mapOAuthConnectionRow);
+    .all() as ChannelConnectionRow[];
+  return rows.map(mapChannelConnectionRow);
 }
 
-export function upsertOAuthConnection(data: {
+export function getChannelConnection(id: string): ChannelConnection | null {
+  const row = db.prepare("SELECT * FROM oauth_connections WHERE id = ?").get(id) as
+    | ChannelConnectionRow
+    | undefined;
+  return row ? mapChannelConnectionRow(row) : null;
+}
+
+export function upsertChannelConnection(data: {
   id: string;
-  provider: OAuthProvider;
+  provider: ChannelId;
   accountId: string;
   accountName: string | null;
   accountEmail: string | null;
@@ -902,8 +1253,9 @@ export function upsertOAuthConnection(data: {
   scopes: string[];
   createdAt: string;
   updatedAt: string;
-}): OAuthConnection {
-  db.prepare(`
+}): ChannelConnection {
+  db.prepare(
+    `
     INSERT INTO oauth_connections
       (id, provider, account_id, account_name, account_email, account_avatar,
        access_token, refresh_token, token_expires_at, scopes, created_at, updated_at)
@@ -917,7 +1269,8 @@ export function upsertOAuthConnection(data: {
       token_expires_at = excluded.token_expires_at,
       scopes = excluded.scopes,
       updated_at = excluded.updated_at
-  `).run(
+  `
+  ).run(
     data.id,
     data.provider,
     data.accountId,
@@ -933,11 +1286,13 @@ export function upsertOAuthConnection(data: {
   );
   const row = db
     .prepare("SELECT * FROM oauth_connections WHERE provider = ? AND account_id = ?")
-    .get(data.provider, data.accountId) as OAuthConnectionRow;
-  return mapOAuthConnectionRow(row);
+    .get(data.provider, data.accountId) as ChannelConnectionRow;
+  return mapChannelConnectionRow(row);
 }
 
-export function getOAuthConnectionToken(id: string): { accessToken: string; refreshToken: string | null } | null {
+export function getChannelConnectionToken(
+  id: string
+): { accessToken: string; refreshToken: string | null } | null {
   const row = db
     .prepare("SELECT access_token, refresh_token FROM oauth_connections WHERE id = ?")
     .get(id) as { access_token: string; refresh_token: string | null } | undefined;
@@ -948,13 +1303,27 @@ export function getOAuthConnectionToken(id: string): { accessToken: string; refr
   };
 }
 
-export function deleteOAuthConnection(id: string): void {
+export function deleteChannelConnection(id: string): void {
   db.prepare("DELETE FROM oauth_connections WHERE id = ?").run(id);
+}
+
+export function deleteChannelConnectionWithRelatedData(id: string): void {
+  db.prepare("DELETE FROM channel_sender_permissions WHERE connection_id = ?").run(id);
+  db.prepare("DELETE FROM channel_pending_messages WHERE connection_id = ?").run(id);
+  db.prepare("DELETE FROM channel_conversations WHERE channel_key LIKE ?").run(`${id}:%`);
+  db.prepare(
+    `DELETE FROM app_notifications
+     WHERE type = 'channel_permission_request'
+       AND json_extract(metadata, '$.connectionId') = ?`
+  ).run(id);
+  deleteChannelConnection(id);
 }
 
 /** Wipe all user data and reset settings to defaults. Used by the onboarding reset flow. */
 export function resetAllData(): void {
   db.prepare("DELETE FROM oauth_connections").run();
+  db.prepare("DELETE FROM channel_sender_permissions").run();
+  db.prepare("DELETE FROM app_notifications").run();
   db.prepare("DELETE FROM scheduled_jobs").run();
   db.prepare("DELETE FROM conversations").run(); // messages cascade
   db.prepare("DELETE FROM user_models").run();

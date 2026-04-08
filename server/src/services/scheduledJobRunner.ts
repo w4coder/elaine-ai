@@ -1,4 +1,9 @@
-import { createNotification, getDueScheduledJobs, getSettings, updateScheduledJob } from "../db/repository.js";
+import {
+  createNotification,
+  getDueScheduledJobs,
+  getSettings,
+  updateScheduledJob,
+} from "../db/repository.js";
 import { randomUUID } from "node:crypto";
 import { generateAssistantReply } from "./chat-service.js";
 import { computeNextRunAt } from "./scheduleParser.js";

@@ -41,6 +41,10 @@ export interface AgentLoopOptions {
   mode: "chat" | "task" | "scheduled";
   /** Optional execution context forwarded to skill execute() calls. */
   skillContext?: Record<string, unknown>;
+  /** When true, execute tools without pausing for permission prompts. */
+  autoApproveTools?: boolean;
+  /** When false, omit the trailing tool recap tags from the final response. */
+  includeToolTags?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +139,67 @@ function formatToolResult(name: string, result: unknown): string {
   }
 }
 
+function buildFooter(
+  fetchedUrls: string[],
+  fileLinks: () => string,
+  toolTags: () => string
+): string {
+  const deduped = [...new Set(fetchedUrls)];
+  const sources =
+    deduped.length > 0
+      ? "\n\n---\n**Sources**\n" + deduped.map((u, i) => `${i + 1}. <${u}>`).join("\n")
+      : "";
+  return sources + fileLinks() + toolTags();
+}
+
+function buildFallbackAnswer(messages: ProviderMessage[]): string {
+  const recentToolOutputs = messages
+    .filter((message) => message.role === "tool" && message.content.trim())
+    .slice(-3)
+    .map((message) => abbreviate(message.content.replace(/\s+/g, " ").trim(), 280));
+
+  const recentAssistantText = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant" && message.content.trim())?.content;
+
+  if (recentAssistantText?.trim()) {
+    return recentAssistantText.trim();
+  }
+
+  if (recentToolOutputs.length > 0) {
+    return (
+      "I couldn’t complete every step, but here’s the best answer I can give from what I gathered so far:\n\n" +
+      recentToolOutputs.map((output, index) => `${index + 1}. ${output}`).join("\n")
+    );
+  }
+
+  return "I couldn’t finish every step, but I don’t want to stop empty-handed. Please retry or narrow the request and I’ll continue from there.";
+}
+
+async function synthesizeFinalAnswer(params: {
+  adapter: ProviderAdapter;
+  profile: import("../types.js").ProviderProfile;
+  model: string;
+  messages: ProviderMessage[];
+}): Promise<string> {
+  const synthesisPrompt: ProviderMessage = {
+    role: "user",
+    content:
+      "No more tool calls are available. Based only on the conversation and tool outputs already gathered, give the best possible final answer now. " +
+      "Do not mention tool limits unless truly necessary. If something remains uncertain, say so briefly and answer with the most useful partial result.",
+  };
+
+  const result = await params.adapter.completeChat({
+    profile: params.profile,
+    model: params.model,
+    messages: [...params.messages, synthesisPrompt],
+    think: false,
+    maxTokens: 1200,
+  });
+
+  return result.content.trim();
+}
+
 // ---------------------------------------------------------------------------
 // Core loop
 // ---------------------------------------------------------------------------
@@ -149,7 +214,16 @@ function formatToolResult(name: string, result: unknown): string {
 export async function* runAgentStream(
   options: AgentLoopOptions
 ): AsyncGenerator<ProviderStreamChunk> {
-  const { adapter, profile, model, tools, mode, skillContext = {} } = options;
+  const {
+    adapter,
+    profile,
+    model,
+    tools,
+    mode,
+    skillContext = {},
+    autoApproveTools = false,
+    includeToolTags = true,
+  } = options;
 
   // Work on a mutable copy so we can append tool messages each turn
   const messages: ProviderMessage[] = [...options.messages];
@@ -173,6 +247,7 @@ export async function* runAgentStream(
   const writtenFiles: Array<{ path: string; name: string }> = [];
 
   function toolTags(): string {
+    if (!includeToolTags) return "";
     if (usedTools.size === 0) return "";
     return "\n\n" + [...usedTools].map((t) => `\`${t}\``).join(" ");
   }
@@ -220,12 +295,7 @@ export async function* runAgentStream(
             "\n⚠ Model returned an empty response after tool execution. The model may not have followed through on the expected tool call (e.g. visualize__show_widget). Try a larger model or simplify the request.\n",
         };
       }
-      const deduped = [...new Set(fetchedUrls)];
-      const sources =
-        deduped.length > 0
-          ? "\n\n---\n**Sources**\n" + deduped.map((u, i) => `${i + 1}. <${u}>`).join("\n")
-          : "";
-      const footer = sources + fileLinks() + toolTags();
+      const footer = buildFooter(fetchedUrls, fileLinks, toolTags);
       if (footer) yield { content: footer };
       return;
     }
@@ -262,7 +332,10 @@ export async function* runAgentStream(
       // ── Permission check ──────────────────────────────────────────────────
       const convId =
         typeof skillContext.conversationId === "string" ? skillContext.conversationId : null;
-      if (!isSkillAllowed({ skillName: toolCall.name, agentMode: mode, conversationId: convId })) {
+      if (
+        !autoApproveTools &&
+        !isSkillAllowed({ skillName: toolCall.name, agentMode: mode, conversationId: convId })
+      ) {
         const capability = getSkillCapability(toolCall.name);
         yield {
           permissionRequired: { skillName: toolCall.name, capability, conversationId: convId! },
@@ -334,12 +407,7 @@ export async function* runAgentStream(
             yield { content: output.slice(i, i + 4) };
           }
         }
-        const deduped = [...new Set(fetchedUrls)];
-        const sources =
-          deduped.length > 0
-            ? "\n\n---\n**Sources**\n" + deduped.map((u, i) => `${i + 1}. <${u}>`).join("\n")
-            : "";
-        const footer = sources + fileLinks() + toolTags();
+        const footer = buildFooter(fetchedUrls, fileLinks, toolTags);
         if (footer) yield { content: footer };
         earlyExit = true;
         break;
@@ -429,11 +497,17 @@ export async function* runAgentStream(
     yield { reasoning: `\n${nextStepLabel}\n` };
   }
 
-  // Exhausted max iterations
-  const deduped = [...new Set(fetchedUrls)];
-  const sources =
-    deduped.length > 0
-      ? "\n\n---\n**Sources**\n" + deduped.map((u, i) => `${i + 1}. <${u}>`).join("\n")
-      : "";
-  yield { content: "*(Reached maximum agent steps.)*" + sources + fileLinks() + toolTags() };
+  // Exhausted max iterations: force a final answer from gathered context instead
+  let finalAnswer = "";
+  try {
+    finalAnswer = await synthesizeFinalAnswer({ adapter, profile, model, messages });
+  } catch {
+    finalAnswer = "";
+  }
+
+  if (!finalAnswer) {
+    finalAnswer = buildFallbackAnswer(messages);
+  }
+
+  yield { content: finalAnswer + buildFooter(fetchedUrls, fileLinks, toolTags) };
 }

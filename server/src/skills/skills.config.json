@@ -10,6 +10,7 @@
     "shell_exec",
     "task_done",
     "memory_search",
+    "conversation_search",
     "visualize__read_me",
     "visualize__show_widget"
   ],
@@ -23,6 +24,7 @@
     "shell_exec",
     "task_done",
     "memory_search",
+    "conversation_search",
     "visualize__read_me",
     "visualize__show_widget"
   ]

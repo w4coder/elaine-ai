@@ -130,10 +130,55 @@ db.exec(`
     title TEXT NOT NULL,
     body TEXT,
     target_url TEXT,
+    metadata TEXT,
     read INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_app_notifications_created ON app_notifications(created_at DESC);
+`);
+
+try {
+  db.exec(`ALTER TABLE app_notifications ADD COLUMN metadata TEXT`);
+} catch {
+  // Column already exists
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS channel_conversations (
+    channel_key TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS channel_sender_permissions (
+    connection_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    sender_name TEXT,
+    status TEXT NOT NULL CHECK(status IN ('approved', 'blocked')),
+    decided_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (connection_id, sender_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_channel_sender_permissions_status
+    ON channel_sender_permissions(channel_id, status, updated_at DESC);
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS channel_pending_messages (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    sender_name TEXT,
+    reply_target_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_channel_pending_messages_sender
+    ON channel_pending_messages(connection_id, sender_id, created_at ASC);
 `);
 
 db.exec(`

@@ -44,22 +44,32 @@ export interface AppNotification {
   title: string;
   body: string | null;
   targetUrl: string | null;
+  metadata: Record<string, unknown> | null;
   read: boolean;
   createdAt: string;
 }
 
-export type OAuthProvider =
-  | "github"
-  | "google"
-  | "discord"
-  | "slack"
-  | "twitter"
-  | "linkedin"
-  | "telegram";
+export type ChannelId = "telegram" | "whatsapp" | "discord" | "slack";
 
-export interface OAuthConnection {
+export type ChannelAuthType = "token" | "qr";
+
+export interface ChannelDescriptor {
+  id: ChannelId;
+  label: string;
+  description: string;
+  authType: ChannelAuthType;
+  color: string;
+  docsUrl: string;
+  tokenLabel?: string;
+  tokenPlaceholder?: string;
+  token2Label?: string;
+  token2Placeholder?: string;
+  needsClientCredentials: boolean;
+}
+
+export interface ChannelConnection {
   id: string;
-  provider: OAuthProvider;
+  provider: ChannelId;
   accountId: string;
   accountName: string | null;
   accountEmail: string | null;
@@ -69,7 +79,20 @@ export interface OAuthConnection {
   updatedAt: string;
 }
 
-export interface OAuthAppConfig {
+export type ChannelSenderStatus = "approved" | "blocked";
+
+export interface ChannelSenderPermission {
+  connectionId: string;
+  channelId: ChannelId;
+  senderId: string;
+  senderName: string | null;
+  status: ChannelSenderStatus;
+  decidedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChannelAppConfig {
   clientId: string;
   clientSecret: string; // MASKED when received from server
 }
@@ -92,7 +115,7 @@ export interface AppSettings {
   asrApiKey?: string;
   asrModel?: string;
   skillPermissions?: SkillPermissionsSettings;
-  connections?: Partial<Record<OAuthProvider, OAuthAppConfig>>;
+  channels?: Partial<Record<ChannelId, ChannelAppConfig>>;
 }
 
 export interface PermissionRequest {

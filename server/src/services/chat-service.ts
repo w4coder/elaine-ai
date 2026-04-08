@@ -64,6 +64,22 @@ export interface ChatPayload {
     scope: string;
     entities: string[];
   }>;
+  conversationSearchFn?: (
+    query: string,
+    limit?: number
+  ) => Array<{
+    conversationId: string;
+    title: string;
+    updatedAt: string;
+    messageId: string;
+    role: "user" | "assistant";
+    snippet: string;
+    score: number;
+  }>;
+  /** Execute tools without waiting for interactive permission approval. */
+  autoApproveTools?: boolean;
+  /** When false, omit trailing tool recap tags from the final response. */
+  includeToolTags?: boolean;
 }
 
 function getOllamaThinkSetting(model: string): boolean | "low" | "medium" | "high" {
@@ -301,10 +317,15 @@ export async function generateAssistantReply(payload: ChatPayload): Promise<{
           tools,
           think,
           mode: (payload.agentMode ?? "chat") as "chat" | "task" | "scheduled",
+          autoApproveTools: payload.autoApproveTools,
+          includeToolTags: payload.includeToolTags,
           skillContext: {
             conversationId: conversation.id,
             ...(payload.workspacePath ? { workspacePath: payload.workspacePath } : {}),
             ...(payload.memorySearchFn ? { memorySearch: payload.memorySearchFn } : {}),
+            ...(payload.conversationSearchFn
+              ? { conversationSearch: payload.conversationSearchFn }
+              : {}),
           },
         })
       : adapter.streamChat({ profile, model, messages: builtMessages, think });
