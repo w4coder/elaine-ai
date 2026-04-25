@@ -22,6 +22,7 @@ import { channelRoutes } from "./routes/channels.js";
 import { ScheduledJobRunner } from "./services/scheduledJobRunner.js";
 import { bootAll as bootChannelRunners } from "./channels/runnerManager.js";
 import { initMessageRouter } from "./channels/messageRouter.js";
+import { applySetupHint } from "./services/setupHint.js";
 
 dotenv.config({ path: resolve(getProjectRoot(), ".env") });
 
@@ -163,6 +164,8 @@ async function buildApp(): Promise<void> {
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 async function start(): Promise<void> {
+  applySetupHint(app.log);
+
   const llm = await createMemoryLlm();
   await memory.init({
     llm,

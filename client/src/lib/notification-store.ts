@@ -64,6 +64,16 @@ class NotificationStore {
     void api.deleteNotification(id).catch(() => undefined);
   }
 
+  upsert(notification: AppNotification): void {
+    const existingIndex = this.items.findIndex((item) => item.id === notification.id);
+    if (existingIndex === -1) {
+      this.items = [notification, ...this.items].slice(0, 200);
+    } else {
+      this.items = this.items.map((item) => (item.id === notification.id ? notification : item));
+    }
+    this.notify();
+  }
+
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

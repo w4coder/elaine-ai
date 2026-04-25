@@ -3,10 +3,15 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   deleteChannelConnectionWithRelatedData,
+  deleteChannelCapabilityGrant,
+  deleteChannelCapabilityGrantsForConnection,
+  deleteChannelCapabilityGrantsForConversation,
   deleteChannelSenderPermission,
   getChannelConnection,
+  listChannelCapabilityGrants,
   listChannelSenderPermissions,
   listChannelConnections,
+  updateChannelConnectionSettings,
   upsertChannelSenderPermission,
   upsertChannelConnection,
 } from "../db/repository.js";
@@ -20,8 +25,16 @@ import {
   setupWhatsApp,
 } from "../channels/runners/whatsapp.js";
 import { clearPendingMessagesForSender } from "../services/channelAccess.js";
+import {
+  markChannelCapabilityNotificationStatus,
+  saveChannelCapabilityDecision,
+} from "../services/channelCapabilityPermissions.js";
+import {
+  denyPendingCapabilityRequestsForConversation,
+  processPendingCapabilityRequestsForConversation,
+} from "../services/channelCapabilityPendingProcessor.js";
 import { processPendingMessagesForSender } from "../services/channelPendingProcessor.js";
-import type { ChannelId, ChannelSenderStatus } from "../types.js";
+import type { ChannelId, ChannelRoutingMode, ChannelSenderStatus } from "../types.js";
 
 // ─── Token validators ─────────────────────────────────────────────────────────
 
@@ -68,6 +81,16 @@ async function validateSlackToken(
   return { id: data.bot_id ?? "slack-bot", name: data.team ?? "Slack workspace" };
 }
 
+function getDefaultChannelRoutingSettings(_provider: ChannelId): {
+  routingMode: ChannelRoutingMode;
+  replyInThread: boolean;
+} {
+  return {
+    routingMode: "mentions",
+    replyInThread: true,
+  };
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 export async function channelRoutes(app: FastifyInstance): Promise<void> {
@@ -75,9 +98,174 @@ export async function channelRoutes(app: FastifyInstance): Promise<void> {
 
   app.get("/api/channels/accounts", async () => listChannelConnections());
 
+  app.patch<{ Params: { id: string } }>("/api/channels/accounts/:id", async (request, reply) => {
+    const parse = z
+      .object({
+        routingMode: z.enum(["direct", "mentions", "all"]).optional(),
+        replyInThread: z.boolean().optional(),
+      })
+      .refine((data) => data.routingMode !== undefined || data.replyInThread !== undefined, {
+        message: "At least one channel setting must be provided",
+      })
+      .safeParse(request.body);
+
+    if (!parse.success) {
+      return reply.code(400).send({ error: "Invalid channel settings payload" });
+    }
+
+    const updated = updateChannelConnectionSettings(request.params.id, parse.data);
+    if (!updated) {
+      return reply.code(404).send({ error: "Channel connection not found" });
+    }
+
+    await restartRunner(updated);
+    return updated;
+  });
+
   app.get("/api/channels/senders", async (request) => {
     const { connectionId } = request.query as { connectionId?: string };
     return listChannelSenderPermissions(connectionId);
+  });
+
+  app.get("/api/channels/capabilities", async (request, reply) => {
+    const parse = z
+      .object({
+        connectionId: z.string().min(1).optional(),
+      })
+      .safeParse(request.query);
+
+    if (!parse.success) {
+      return reply.code(400).send({ error: "Invalid channel capabilities query" });
+    }
+
+    return listChannelCapabilityGrants(parse.data.connectionId);
+  });
+
+  app.post("/api/channels/capabilities", async (request, reply) => {
+    const parse = z
+      .object({
+        connectionId: z.string().min(1),
+        notificationId: z.string().min(1).optional(),
+        scopeKey: z.string().min(1).optional(),
+        conversationKey: z.string().min(1),
+        capability: z.string().min(1),
+        type: z.enum(["once", "chat", "deny"]),
+      })
+      .safeParse(request.body);
+
+    if (!parse.success) {
+      return reply.code(400).send({ error: "Invalid channel capability payload" });
+    }
+
+    const connection = getChannelConnection(parse.data.connectionId);
+    if (!connection) {
+      return reply.code(404).send({ error: "Channel connection not found" });
+    }
+
+    const scopeKey = parse.data.scopeKey ?? parse.data.conversationKey;
+
+    saveChannelCapabilityDecision({
+      connectionId: parse.data.connectionId,
+      conversationKey: scopeKey,
+      capability: parse.data.capability,
+      type: parse.data.type,
+    });
+
+    const processingNotification = markChannelCapabilityNotificationStatus({
+      notificationId: parse.data.notificationId,
+      connectionId: parse.data.connectionId,
+      scopeKey,
+      capability: parse.data.capability,
+      status: parse.data.type === "deny" ? "denied" : "processing",
+      resolution: parse.data.type,
+    });
+
+    if (parse.data.type === "deny") {
+      await denyPendingCapabilityRequestsForConversation({
+        connectionId: parse.data.connectionId,
+        scopeKey,
+        capability: parse.data.capability,
+      });
+    } else {
+      await processPendingCapabilityRequestsForConversation({
+        connectionId: parse.data.connectionId,
+        scopeKey,
+        capability: parse.data.capability,
+        limit: parse.data.type === "once" ? 1 : undefined,
+      });
+
+      markChannelCapabilityNotificationStatus({
+        notificationId: parse.data.notificationId,
+        connectionId: parse.data.connectionId,
+        scopeKey,
+        capability: parse.data.capability,
+        status: "completed",
+        resolution: parse.data.type,
+      });
+    }
+
+    return {
+      ok: true,
+      notification:
+        parse.data.type === "deny"
+          ? markChannelCapabilityNotificationStatus({
+              notificationId: parse.data.notificationId,
+              connectionId: parse.data.connectionId,
+              scopeKey,
+              capability: parse.data.capability,
+              status: "denied",
+              resolution: parse.data.type,
+            })
+          : (markChannelCapabilityNotificationStatus({
+              notificationId: parse.data.notificationId,
+              connectionId: parse.data.connectionId,
+              scopeKey,
+              capability: parse.data.capability,
+              status: "completed",
+              resolution: parse.data.type,
+            }) ?? processingNotification),
+    };
+  });
+
+  app.delete("/api/channels/capabilities", async (request, reply) => {
+    const parse = z
+      .object({
+        connectionId: z.string().min(1),
+        scopeKey: z.string().min(1).optional(),
+        conversationKey: z.string().min(1).optional(),
+        capability: z.string().min(1).optional(),
+      })
+      .superRefine((data, ctx) => {
+        if (data.capability && !data.conversationKey && !data.scopeKey) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "scopeKey or conversationKey is required when capability is provided",
+            path: ["scopeKey"],
+          });
+        }
+      })
+      .safeParse(request.query);
+
+    if (!parse.success) {
+      return reply.code(400).send({ error: "Invalid channel capability revoke query" });
+    }
+
+    const connection = getChannelConnection(parse.data.connectionId);
+    if (!connection) {
+      return reply.code(404).send({ error: "Channel connection not found" });
+    }
+
+    const scopeKey = parse.data.scopeKey ?? parse.data.conversationKey;
+
+    if (scopeKey && parse.data.capability) {
+      deleteChannelCapabilityGrant(parse.data.connectionId, scopeKey, parse.data.capability);
+    } else if (scopeKey) {
+      deleteChannelCapabilityGrantsForConversation(parse.data.connectionId, scopeKey);
+    } else {
+      deleteChannelCapabilityGrantsForConnection(parse.data.connectionId);
+    }
+
+    return reply.code(204).send();
   });
 
   app.put("/api/channels/senders", async (request, reply) => {
@@ -171,6 +359,7 @@ export async function channelRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const now = nowIso();
+      const defaults = getDefaultChannelRoutingSettings(channelId as ChannelId);
       const conn = await upsertChannelConnection({
         id: randomUUID(),
         provider: channelId as ChannelId,
@@ -181,6 +370,8 @@ export async function channelRoutes(app: FastifyInstance): Promise<void> {
         accessToken: encryptApiKey(token),
         refreshToken: token2 ? encryptApiKey(token2) : null,
         tokenExpiresAt: null,
+        routingMode: defaults.routingMode,
+        replyInThread: defaults.replyInThread,
         scopes: [],
         createdAt: now,
         updatedAt: now,
@@ -211,6 +402,7 @@ export async function channelRoutes(app: FastifyInstance): Promise<void> {
           send("qr", { dataUrl: event.dataUrl });
         } else if (event.type === "connected") {
           const now = nowIso();
+          const defaults = getDefaultChannelRoutingSettings("whatsapp");
           const conn = await upsertChannelConnection({
             id: connectionId,
             provider: "whatsapp",
@@ -221,6 +413,8 @@ export async function channelRoutes(app: FastifyInstance): Promise<void> {
             accessToken: encryptApiKey(connectionId), // session is file-based, token is a reference
             refreshToken: null,
             tokenExpiresAt: null,
+            routingMode: defaults.routingMode,
+            replyInThread: defaults.replyInThread,
             scopes: [],
             createdAt: now,
             updatedAt: now,

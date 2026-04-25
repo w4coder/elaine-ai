@@ -1,13 +1,17 @@
 {
   "name": "elaine-local-assistant",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "private": true,
   "description": "A local-first chat assistant UI for OpenAI-compatible APIs, Ollama, and vLLM.",
   "workspaces": [
     "client",
     "server"
   ],
+  "bin": {
+    "elaine": "scripts/setup.mjs"
+  },
   "scripts": {
+    "setup": "node scripts/setup.mjs",
     "dev": "concurrently -n server,client -c cyan,magenta \"npm run dev --workspace server\" \"npm run dev --workspace client\"",
     "build": "npm run build --workspace client && npm run build --workspace server",
     "start": "npm run start --workspace server",

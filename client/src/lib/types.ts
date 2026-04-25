@@ -50,6 +50,7 @@ export interface AppNotification {
 }
 
 export type ChannelId = "telegram" | "whatsapp" | "discord" | "slack";
+export type ChannelRoutingMode = "direct" | "mentions" | "all";
 
 export type ChannelAuthType = "token" | "qr";
 
@@ -74,6 +75,8 @@ export interface ChannelConnection {
   accountName: string | null;
   accountEmail: string | null;
   accountAvatar: string | null;
+  routingMode: ChannelRoutingMode;
+  replyInThread: boolean;
   scopes: string[];
   createdAt: string;
   updatedAt: string;
@@ -88,6 +91,17 @@ export interface ChannelSenderPermission {
   senderName: string | null;
   status: ChannelSenderStatus;
   decidedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ChannelCapabilityGrantType = "once" | "chat" | "deny";
+
+export interface ChannelCapabilityGrant {
+  connectionId: string;
+  conversationKey: string;
+  capability: string;
+  decision: ChannelCapabilityGrantType;
   createdAt: string;
   updatedAt: string;
 }

@@ -10,12 +10,12 @@ import { TelegramRunner } from "./runners/telegram.js";
 import { DiscordRunner } from "./runners/discord.js";
 import { SlackRunner } from "./runners/slack.js";
 import { WhatsAppRunner } from "./runners/whatsapp.js";
-import type { ChannelConnection, ChannelId } from "../types.js";
+import type { ChannelConnection, ChannelId, ChannelReplyOptions } from "../types.js";
 
 type AnyRunner = {
   start(): void | Promise<void>;
   stop(): void | Promise<void>;
-  sendMessage?(targetId: string, text: string): Promise<void>;
+  sendMessage?(targetId: string, text: string, options?: ChannelReplyOptions): Promise<void>;
 };
 
 const runners = new Map<string, AnyRunner>();
@@ -32,11 +32,11 @@ export async function startRunner(connection: ChannelConnection): Promise<void> 
 
   switch (connection.provider as ChannelId) {
     case "telegram":
-      runner = new TelegramRunner(connection.id, token);
+      runner = new TelegramRunner(connection, token);
       break;
 
     case "discord":
-      runner = new DiscordRunner(connection.id, token);
+      runner = new DiscordRunner(connection, token);
       break;
 
     case "slack": {
@@ -45,12 +45,12 @@ export async function startRunner(connection: ChannelConnection): Promise<void> 
         console.warn(`[runnerManager] Slack connection ${connection.id} missing app-level token`);
         return;
       }
-      runner = new SlackRunner(connection.id, token, appToken);
+      runner = new SlackRunner(connection, token, appToken);
       break;
     }
 
     case "whatsapp":
-      runner = new WhatsAppRunner(connection.id);
+      runner = new WhatsAppRunner(connection);
       break;
 
     default:
@@ -92,11 +92,12 @@ export async function bootAll(): Promise<void> {
 export async function sendChannelMessage(
   connectionId: string,
   targetId: string,
-  text: string
+  text: string,
+  options?: ChannelReplyOptions
 ): Promise<void> {
   const runner = runners.get(connectionId);
   if (!runner?.sendMessage) {
     throw new Error(`Runner for connection ${connectionId} cannot send messages`);
   }
-  await runner.sendMessage(targetId, text);
+  await runner.sendMessage(targetId, text, options);
 }

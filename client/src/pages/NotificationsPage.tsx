@@ -31,6 +31,7 @@ const TYPE_COLOR: Record<string, string> = {
   schedule_started: "#a78bfa",
   schedule_failed: "#f87171",
   channel_permission_request: "#f59e0b",
+  channel_capability_request: "#38bdf8",
 };
 
 const TYPE_LABEL: Record<string, string> = {
@@ -38,6 +39,7 @@ const TYPE_LABEL: Record<string, string> = {
   schedule_started: "Started",
   schedule_failed: "Failed",
   channel_permission_request: "Approval",
+  channel_capability_request: "Capability",
 };
 
 function getChannelPermissionMetadata(notification: AppNotification): {
@@ -67,6 +69,86 @@ function getChannelPermissionMetadata(notification: AppNotification): {
   };
 }
 
+function getChannelCapabilityMetadata(notification: AppNotification): {
+  connectionId: string;
+  scopeKey: string;
+  conversationKey: string;
+  capability: string;
+  skillName: string | null;
+} | null {
+  if (notification.type !== "channel_capability_request" || !notification.metadata) {
+    return null;
+  }
+
+  const metadata = notification.metadata;
+  if (
+    typeof metadata.connectionId !== "string" ||
+    typeof metadata.conversationKey !== "string" ||
+    typeof metadata.capability !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    connectionId: metadata.connectionId,
+    scopeKey: typeof metadata.scopeKey === "string" ? metadata.scopeKey : metadata.conversationKey,
+    conversationKey: metadata.conversationKey,
+    capability: metadata.capability,
+    skillName: typeof metadata.skillName === "string" ? metadata.skillName : null,
+  };
+}
+
+function getCapabilityNotificationStatus(notification: AppNotification): {
+  status: "pending" | "processing" | "completed" | "denied";
+  resolution: "once" | "chat" | "deny" | null;
+} | null {
+  if (notification.type !== "channel_capability_request" || !notification.metadata) {
+    return null;
+  }
+
+  const metadata = notification.metadata;
+  const status =
+    metadata.status === "processing" ||
+    metadata.status === "completed" ||
+    metadata.status === "denied"
+      ? metadata.status
+      : "pending";
+  const resolution =
+    metadata.resolution === "once" ||
+    metadata.resolution === "chat" ||
+    metadata.resolution === "deny"
+      ? metadata.resolution
+      : null;
+
+  return { status, resolution };
+}
+
+function describeCapabilityNotificationStatus(notification: AppNotification): string | null {
+  const state = getCapabilityNotificationStatus(notification);
+  if (!state || state.status === "pending") {
+    return null;
+  }
+
+  const resolutionLabel =
+    state.resolution === "chat"
+      ? "Allowed in this chat"
+      : state.resolution === "once"
+        ? "Allowed once"
+        : state.resolution === "deny"
+          ? "Denied"
+          : "Updated";
+
+  if (state.status === "processing") {
+    return `${resolutionLabel}. Processing request...`;
+  }
+
+  if (state.status === "completed") {
+    return `${resolutionLabel}. Request processed.`;
+  }
+
+  return `${resolutionLabel}.`;
+}
+
 // ─── Notification detail panel ────────────────────────────────────────────────
 
 interface DetailPanelProps {
@@ -77,6 +159,8 @@ interface DetailPanelProps {
 function DetailPanel({ id, onBack }: DetailPanelProps) {
   const navigate = useNavigate();
   const [notification, setNotification] = useState<AppNotification | null | undefined>(undefined);
+  const [resolvingAction, setResolvingAction] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     setNotification(undefined);
@@ -125,6 +209,42 @@ function DetailPanel({ id, onBack }: DetailPanelProps) {
 
   const color = TYPE_COLOR[notification.type] ?? "var(--accent)";
   const channelPermission = getChannelPermissionMetadata(notification);
+  const channelCapability = getChannelCapabilityMetadata(notification);
+  const channelCapabilityStatus = getCapabilityNotificationStatus(notification);
+
+  async function runAction(label: string, action: () => Promise<void>) {
+    setResolvingAction(label);
+    setActionError(null);
+    try {
+      await action();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Action failed");
+    } finally {
+      setResolvingAction(null);
+    }
+  }
+
+  function setCapabilityProcessingState(
+    resolution: "once" | "chat" | "deny",
+    statusMessage: string
+  ) {
+    if (!notification) {
+      return;
+    }
+
+    const next: AppNotification = {
+      ...notification,
+      read: true,
+      body: statusMessage,
+      metadata: {
+        ...(notification.metadata ?? {}),
+        status: "processing",
+        resolution,
+      },
+    };
+    notificationStore.upsert(next);
+    setNotification(next);
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -197,21 +317,45 @@ function DetailPanel({ id, onBack }: DetailPanelProps) {
             {formatFull(notification.createdAt)}
           </div>
 
+          {resolvingAction && (
+            <p className="text-sm" style={{ color: "rgba(56,189,248,0.85)" }}>
+              {resolvingAction}
+            </p>
+          )}
+
+          {actionError && (
+            <p className="text-sm" style={{ color: "#f87171" }}>
+              {actionError}
+            </p>
+          )}
+
+          {describeCapabilityNotificationStatus(notification) && (
+            <p className="text-sm" style={{ color: "rgba(56,189,248,0.85)" }}>
+              {describeCapabilityNotificationStatus(notification)}
+            </p>
+          )}
+
           {channelPermission && (
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={async () => {
-                  await api.setChannelSenderPermission({
-                    connectionId: channelPermission.connectionId,
-                    channelId: channelPermission.channelId,
-                    senderId: channelPermission.senderId,
-                    senderName: channelPermission.senderName,
-                    status: "approved",
-                  });
-                  notificationStore.remove(notification.id);
-                  navigate("/channels");
-                }}
+                disabled={!!resolvingAction}
+                onClick={() =>
+                  void runAction(
+                    "Allowing sender and replaying the pending message...",
+                    async () => {
+                      await api.setChannelSenderPermission({
+                        connectionId: channelPermission.connectionId,
+                        channelId: channelPermission.channelId,
+                        senderId: channelPermission.senderId,
+                        senderName: channelPermission.senderName,
+                        status: "approved",
+                      });
+                      notificationStore.remove(notification.id);
+                      navigate("/channels");
+                    }
+                  )
+                }
                 className="self-start flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors"
                 style={{
                   background: "rgba(34,197,94,0.12)",
@@ -224,17 +368,20 @@ function DetailPanel({ id, onBack }: DetailPanelProps) {
               </button>
               <button
                 type="button"
-                onClick={async () => {
-                  await api.setChannelSenderPermission({
-                    connectionId: channelPermission.connectionId,
-                    channelId: channelPermission.channelId,
-                    senderId: channelPermission.senderId,
-                    senderName: channelPermission.senderName,
-                    status: "blocked",
-                  });
-                  notificationStore.remove(notification.id);
-                  navigate("/channels");
-                }}
+                disabled={!!resolvingAction}
+                onClick={() =>
+                  void runAction("Blocking sender...", async () => {
+                    await api.setChannelSenderPermission({
+                      connectionId: channelPermission.connectionId,
+                      channelId: channelPermission.channelId,
+                      senderId: channelPermission.senderId,
+                      senderName: channelPermission.senderName,
+                      status: "blocked",
+                    });
+                    notificationStore.remove(notification.id);
+                    navigate("/channels");
+                  })
+                }
                 className="self-start flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors"
                 style={{
                   background: "rgba(239,68,68,0.12)",
@@ -244,6 +391,119 @@ function DetailPanel({ id, onBack }: DetailPanelProps) {
               >
                 <X size={13} />
                 Block sender
+              </button>
+            </div>
+          )}
+
+          {channelCapability && channelCapabilityStatus?.status === "pending" && (
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={!!resolvingAction}
+                onClick={() =>
+                  void runAction(
+                    `Allowing ${channelCapability.capability} once and resuming the channel request...`,
+                    async () => {
+                      setCapabilityProcessingState(
+                        "once",
+                        `${channelCapability.capability} was allowed once. Processing the request now.`
+                      );
+                      const result = await api.resolveChannelCapability({
+                        notificationId: notification.id,
+                        connectionId: channelCapability.connectionId,
+                        scopeKey: channelCapability.scopeKey,
+                        conversationKey: channelCapability.conversationKey,
+                        capability: channelCapability.capability,
+                        type: "once",
+                      });
+                      if (result.notification) {
+                        notificationStore.upsert(result.notification);
+                        setNotification(result.notification);
+                      }
+                    }
+                  )
+                }
+                className="self-start flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors"
+                style={{
+                  background: "rgba(34,197,94,0.12)",
+                  color: "#4ade80",
+                  border: "1px solid rgba(34,197,94,0.24)",
+                }}
+              >
+                <Check size={13} />
+                Allow once
+              </button>
+              <button
+                type="button"
+                disabled={!!resolvingAction}
+                onClick={() =>
+                  void runAction(
+                    `Allowing ${channelCapability.capability} for this chat and resuming...`,
+                    async () => {
+                      setCapabilityProcessingState(
+                        "chat",
+                        `${channelCapability.capability} is allowed in this chat. Processing the request now.`
+                      );
+                      const result = await api.resolveChannelCapability({
+                        notificationId: notification.id,
+                        connectionId: channelCapability.connectionId,
+                        scopeKey: channelCapability.scopeKey,
+                        conversationKey: channelCapability.conversationKey,
+                        capability: channelCapability.capability,
+                        type: "chat",
+                      });
+                      if (result.notification) {
+                        notificationStore.upsert(result.notification);
+                        setNotification(result.notification);
+                      }
+                    }
+                  )
+                }
+                className="self-start flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors"
+                style={{
+                  background: "rgba(56,189,248,0.12)",
+                  color: "#38bdf8",
+                  border: "1px solid rgba(56,189,248,0.24)",
+                }}
+              >
+                <Check size={13} />
+                Allow in this chat
+              </button>
+              <button
+                type="button"
+                disabled={!!resolvingAction}
+                onClick={() =>
+                  void runAction(
+                    `Denying ${channelCapability.capability} for this chat...`,
+                    async () => {
+                      setCapabilityProcessingState(
+                        "deny",
+                        `${channelCapability.capability} was denied for this chat.`
+                      );
+                      const result = await api.resolveChannelCapability({
+                        notificationId: notification.id,
+                        connectionId: channelCapability.connectionId,
+                        scopeKey: channelCapability.scopeKey,
+                        conversationKey: channelCapability.conversationKey,
+                        capability: channelCapability.capability,
+                        type: "deny",
+                      });
+                      if (result.notification) {
+                        notificationStore.upsert(result.notification);
+                        setNotification(result.notification);
+                      }
+                    }
+                  )
+                }
+                className="self-start flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors"
+                style={{
+                  background: "rgba(239,68,68,0.12)",
+                  color: "#f87171",
+                  border: "1px solid rgba(239,68,68,0.24)",
+                }}
+              >
+                <X size={13} />
+                Deny
               </button>
             </div>
           )}
@@ -359,6 +619,7 @@ export function NotificationsPage() {
             <ul className="divide-y" style={{ borderColor: "rgba(255,255,255,0.05)" }}>
               {notifications.map((n) => {
                 const isSelected = n.id === id;
+                const statusSummary = describeCapabilityNotificationStatus(n);
                 return (
                   <li key={n.id}>
                     <button
@@ -418,6 +679,14 @@ export function NotificationsPage() {
                             style={{ color: "rgba(255,255,255,0.35)" }}
                           >
                             {n.body}
+                          </p>
+                        )}
+                        {statusSummary && (
+                          <p
+                            className="text-[10px] leading-relaxed mt-0.5"
+                            style={{ color: "rgba(56,189,248,0.85)" }}
+                          >
+                            {statusSummary}
                           </p>
                         )}
                         <span

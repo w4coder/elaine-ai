@@ -3,6 +3,7 @@ import type {
   AppSettings,
   AsrProvider,
   AuditLogEntry,
+  ChannelCapabilityGrant,
   ChannelConnection,
   ChannelDescriptor,
   ChannelId,
@@ -459,6 +460,18 @@ export const api = {
   listChannelAccounts() {
     return request<ChannelConnection[]>("/api/channels/accounts");
   },
+  updateChannelAccount(
+    id: string,
+    patch: Partial<{
+      routingMode: import("./types").ChannelRoutingMode;
+      replyInThread: boolean;
+    }>
+  ) {
+    return request<ChannelConnection>(`/api/channels/accounts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  },
   listChannelSenders(connectionId?: string) {
     const qs = connectionId ? `?${new URLSearchParams({ connectionId }).toString()}` : "";
     return request<ChannelSenderPermission[]>(`/api/channels/senders${qs}`);
@@ -478,6 +491,44 @@ export const api = {
   deleteChannelSenderPermission(connectionId: string, senderId: string) {
     const qs = new URLSearchParams({ connectionId, senderId });
     return request<void>(`/api/channels/senders?${qs.toString()}`, { method: "DELETE" });
+  },
+  resolveChannelCapability(payload: {
+    notificationId?: string;
+    connectionId: string;
+    scopeKey?: string;
+    conversationKey: string;
+    capability: string;
+    type: "once" | "chat" | "deny";
+  }) {
+    return request<{ ok: boolean; notification?: AppNotification | null }>(
+      "/api/channels/capabilities",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
+  },
+  listChannelCapabilities(connectionId?: string) {
+    const qs = connectionId ? `?${new URLSearchParams({ connectionId }).toString()}` : "";
+    return request<ChannelCapabilityGrant[]>(`/api/channels/capabilities${qs}`);
+  },
+  revokeChannelCapability(payload: {
+    connectionId: string;
+    scopeKey?: string;
+    conversationKey?: string;
+    capability?: string;
+  }) {
+    const qs = new URLSearchParams({ connectionId: payload.connectionId });
+    if (payload.scopeKey) {
+      qs.set("scopeKey", payload.scopeKey);
+    }
+    if (payload.conversationKey) {
+      qs.set("conversationKey", payload.conversationKey);
+    }
+    if (payload.capability) {
+      qs.set("capability", payload.capability);
+    }
+    return request<void>(`/api/channels/capabilities?${qs.toString()}`, { method: "DELETE" });
   },
   connectChannel(channelId: ChannelId) {
     return request<{ authUrl: string }>(`/api/channels/${channelId}/connect`, { method: "POST" });
