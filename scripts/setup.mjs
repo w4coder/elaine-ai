@@ -262,11 +262,38 @@ async function buildAndStart(root) {
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
 }
 
+function isWsl() {
+  if (process.env.WSL_DISTRO_NAME) return true;
+  try {
+    return existsSync('/proc/version') &&
+      /microsoft/i.test(execSync('cat /proc/version').toString());
+  } catch { return false; }
+}
+
+function browserOpeners() {
+  if (IS_WIN) return [['cmd', ['/c', 'start', '', '__URL__']]];
+  if (IS_MAC) return [['open', ['__URL__']]];
+  if (isWsl()) {
+    return [
+      ['wslview', ['__URL__']],
+      ['cmd.exe', ['/c', 'start', '', '__URL__']],
+      ['xdg-open', ['__URL__']],
+    ];
+  }
+  return [['xdg-open', ['__URL__']]];
+}
+
 async function openBrowser(url) {
-  const cmd = IS_WIN ? 'cmd' : IS_MAC ? 'open' : 'xdg-open';
-  const args = IS_WIN ? ['/c', 'start', '', url] : [url];
-  spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
-  ok(`Opened ${url}`);
+  for (const [cmd, argsTpl] of browserOpeners()) {
+    const args = argsTpl.map((a) => a.replace('__URL__', url));
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+    const failed = await new Promise((res) => {
+      child.once('error', () => res(true));
+      child.once('spawn', () => { child.unref(); res(false); });
+    });
+    if (!failed) { ok(`Opened ${url}`); return; }
+  }
+  warn(`Could not auto-open a browser. Visit ${url} manually.`);
 }
 
 async function main() {
