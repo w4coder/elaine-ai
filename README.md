@@ -213,7 +213,7 @@ Add and configure providers, set default models per task type, and tune global b
 If you already have **Node.js 20+** and **git** installed:
 
 ```bash
-npx -y github:Princenick-BL/elaine
+npx -y github:w4coder/elaine-ai
 ```
 
 The setup wizard will:
@@ -237,13 +237,13 @@ Use the bootstrap installer for your OS — it installs Node 20+ first, then han
 **Linux / macOS:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Princenick-BL/elaine/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/w4coder/elaine-ai/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/Princenick-BL/elaine/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/w4coder/elaine-ai/main/install.ps1 | iex
 ```
 
 > **vLLM on Windows:** vLLM is not officially supported on native Windows. The wizard will refuse it; pick Ollama, or run the installer inside WSL.
@@ -258,12 +258,12 @@ After install, all state lives under the stable home directory:
 | `<ELAINE_HOME>/server/data/setup-hint.json` | First-boot provider hint (auto-deleted)  |
 | `<ELAINE_HOME>/.env`                        | Optional environment overrides           |
 
-To wipe everything, delete `<ELAINE_HOME>` and re-run `npx -y github:Princenick-BL/elaine`.
+To wipe everything, delete `<ELAINE_HOME>` and re-run `npx -y github:w4coder/elaine-ai`.
 
 ### Manual dev setup
 
 ```bash
-git clone https://github.com/Princenick-BL/elaine
+git clone https://github.com/w4coder/elaine-ai
 cd elaine
 npm install
 npm run dev
@@ -430,7 +430,7 @@ npm run format       # Prettier
 
 ### 0.6.0 — One-shot install
 
-- New `npx -y github:Princenick-BL/elaine` entrypoint runs an interactive setup wizard ([scripts/setup.mjs](scripts/setup.mjs)) — installs deps, picks provider, installs/starts Ollama or vLLM, pulls and smoke-tests a model, builds, starts the server, opens the browser
+- New `npx -y github:w4coder/elaine-ai` entrypoint runs an interactive setup wizard ([scripts/setup.mjs](scripts/setup.mjs)) — installs deps, picks provider, installs/starts Ollama or vLLM, pulls and smoke-tests a model, builds, starts the server, opens the browser
 - Bootstrap installers for users without Node — [install.sh](install.sh) (Linux/macOS, installs Node via nvm) and [install.ps1](install.ps1) (Windows, installs Node via winget)
 - Stable install location: the wizard relocates from npm's transient `_npx` cache into `~/.elaine` (or `%LOCALAPPDATA%\Elaine` on Windows) on first run, so the SQLite database, memory, and settings persist across upgrades. Override with `ELAINE_HOME`
 - First-boot provider seeding: setup writes `server/data/setup-hint.json`; on next start the server activates the matching profile, registers the chosen model, sets it as default + title model, and deletes the hint ([server/src/services/setupHint.ts](server/src/services/setupHint.ts))

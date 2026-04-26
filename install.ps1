@@ -1,11 +1,11 @@
 # Elaine one-shot installer for Windows.
 # Usage (PowerShell):
-#   irm https://raw.githubusercontent.com/Princenick-BL/elaine/main/install.ps1 | iex
-# Ensures Node 20+ (via winget), then runs `npx github:Princenick-BL/elaine` to launch the setup wizard.
+#   irm https://raw.githubusercontent.com/w4coder/elaine-ai/main/install.ps1 | iex
+# Ensures Node 20+ (via winget), then runs `npx github:w4coder/elaine-ai` to launch the setup wizard.
 
 $ErrorActionPreference = 'Stop'
 
-$Repo = if ($env:ELAINE_REPO) { $env:ELAINE_REPO } else { 'Princenick-BL/elaine' }
+$Repo = if ($env:ELAINE_REPO) { $env:ELAINE_REPO } else { 'w4coder/elaine-ai' }
 $RequiredNodeMajor = 20
 
 function Write-Step($msg) { Write-Host "> $msg" -ForegroundColor Cyan }

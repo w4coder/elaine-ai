@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Elaine one-shot setup. Designed for `npx github:Princenick-BL/elaine` (or `npm run setup`
+// Elaine one-shot setup. Designed for `npx github:w4coder/elaine-ai` (or `npm run setup`
 // inside a checkout). Installs deps, picks Ollama/vLLM, ensures the provider, pulls a model,
 // builds, starts the server, opens the browser.
 
@@ -18,7 +18,7 @@ const IS_WIN = platform === 'win32';
 const IS_LINUX = platform === 'linux';
 const IS_MAC = platform === 'darwin';
 
-const REPO = process.env.ELAINE_REPO || 'Princenick-BL/elaine';
+const REPO = process.env.ELAINE_REPO || 'w4coder/elaine-ai';
 const ELAINE_HOME = process.env.ELAINE_HOME ||
   (IS_WIN
     ? resolve(process.env.LOCALAPPDATA || homedir(), 'Elaine')
