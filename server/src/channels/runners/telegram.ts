@@ -6,6 +6,7 @@
 import { routeMessage } from "../messageRouter.js";
 import { formatReplyForChannel } from "../formatReply.js";
 import { withTypingIndicator } from "../typing.js";
+import type { ChannelConnection, ChannelReplyOptions } from "../../types.js";
 
 interface TelegramUpdate {
   update_id: number;
@@ -18,15 +19,17 @@ interface TelegramUpdate {
 }
 
 export class TelegramRunner {
-  private connectionId: string;
+  private connection: ChannelConnection;
   private token: string;
   private offset = 0;
   private stopped = false;
   private abortController = new AbortController();
+  private botUsername: string | null;
 
-  constructor(connectionId: string, token: string) {
-    this.connectionId = connectionId;
+  constructor(connection: ChannelConnection, token: string) {
+    this.connection = connection;
     this.token = token;
+    this.botUsername = extractTelegramUsername(connection.accountName);
   }
 
   start(): void {
@@ -38,10 +41,11 @@ export class TelegramRunner {
     this.abortController.abort();
   }
 
-  async sendMessage(targetId: string, text: string): Promise<void> {
+  async sendMessage(targetId: string, text: string, options?: ChannelReplyOptions): Promise<void> {
     await this.api("sendMessage", {
       chat_id: targetId,
       text: formatReplyForChannel("telegram", text),
+      reply_to_message_id: options?.replyMessageId ? Number(options.replyMessageId) : undefined,
     });
   }
 
@@ -83,7 +87,7 @@ export class TelegramRunner {
           const chatId = String(msg.chat.id);
           const senderName = msg.from.first_name ?? null;
 
-          void this.handleMessage(chatId, senderId, senderName, msg.text);
+          void this.handleMessage(chatId, senderId, senderName, msg.text, msg.message_id);
         }
       } catch (err) {
         if (this.stopped) break;
@@ -96,32 +100,77 @@ export class TelegramRunner {
     chatId: string,
     senderId: string,
     senderName: string | null,
-    text: string
+    text: string,
+    messageId: number
   ): Promise<void> {
     try {
+      const isDirect = chatId === senderId;
+      const isMention = this.botUsername
+        ? text.toLowerCase().includes(`@${this.botUsername.toLowerCase()}`)
+        : false;
+      if (!this.shouldRouteMessage(isDirect, isMention)) {
+        return;
+      }
+
+      const conversationKey = isDirect
+        ? `${this.connection.id}:dm:${chatId}`
+        : `${this.connection.id}:chat:${chatId}:sender:${senderId}`;
+      const replyMessageId = !isDirect && this.connection.replyInThread ? String(messageId) : null;
       const reply = await withTypingIndicator(
         () => this.api("sendChatAction", { chat_id: chatId, action: "typing" }).then(() => {}),
         () =>
           routeMessage({
-            connectionId: this.connectionId,
+            connectionId: this.connection.id,
             channelId: "telegram",
             senderId,
             senderName,
+            conversationKey,
             replyTargetId: chatId,
+            replyMessageId,
             text,
           }),
         4000
       );
 
       if (reply) {
-        await this.sendMessage(chatId, reply);
+        await this.sendMessage(chatId, reply, { replyMessageId });
       }
     } catch (err) {
       console.error("[TelegramRunner] handleMessage error:", err);
+    }
+  }
+
+  private shouldRouteMessage(isDirect: boolean, isMention: boolean): boolean {
+    if (isDirect) {
+      return true;
+    }
+
+    switch (this.connection.routingMode) {
+      case "all":
+        return true;
+      case "mentions":
+        return isMention;
+      case "direct":
+      default:
+        return false;
     }
   }
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function extractTelegramUsername(accountName: string | null): string | null {
+  if (!accountName) {
+    return null;
+  }
+
+  const parenMatch = accountName.match(/\(@([^)]+)\)/);
+  if (parenMatch?.[1]) {
+    return parenMatch[1];
+  }
+
+  const inlineMatch = accountName.match(/@([A-Za-z0-9_]+)/);
+  return inlineMatch?.[1] ?? null;
 }

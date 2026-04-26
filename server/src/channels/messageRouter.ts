@@ -8,18 +8,25 @@
  */
 
 import { db } from "../db/database.js";
-import { getSettings, listUserModels } from "../db/repository.js";
+import { deleteMessagesFromId, getSettings, listUserModels } from "../db/repository.js";
 import { getProfile } from "../providers/index.js";
 import { generateAssistantReply } from "../services/chat-service.js";
 import { checkChannelSenderAccess } from "../services/channelAccess.js";
+import {
+  consumeChannelCapabilityGrantOnce,
+  getChannelCapabilityDecision,
+  requestChannelCapabilityApproval,
+} from "../services/channelCapabilityPermissions.js";
 import { createConversationSearchFn, createMemorySearchFn } from "../services/search.js";
 import {
   classifyIntent,
   getClassifierConfig,
   resolveClassifierModel,
 } from "../classifier/intentClassifier.js";
+import { getToolsForIntent } from "../skills/skillsConfig.js";
+import { AGENT_TASK_SYSTEM_PROMPT } from "../utils/constants.js";
 import type { MemoryModule } from "../memory/types.js";
-import type { ChannelId, ToolDefinition } from "../types.js";
+import type { ChannelId } from "../types.js";
 
 const LOCAL_USER = "local_user";
 
@@ -31,6 +38,8 @@ export function initMessageRouter(memory: MemoryModule): void {
   _memory = memory;
 }
 
+const CHANNEL_UNSUPPORTED_TOOLS = new Set(["visualize__read_me", "visualize__show_widget"]);
+
 // ─── DB helpers ───────────────────────────────────────────────────────────────
 
 export interface IncomingMessage {
@@ -39,8 +48,15 @@ export interface IncomingMessage {
   /** Platform-specific user/chat identifier */
   senderId: string;
   senderName: string | null;
+  conversationKey?: string;
   replyTargetId: string;
+  replyThreadId?: string | null;
+  replyMessageId?: string | null;
   text: string;
+}
+
+function getChannelCapabilityScopeKey(msg: IncomingMessage): string {
+  return `${msg.connectionId}:target:${msg.replyTargetId}`;
 }
 
 function getStoredConversationId(key: string): string | undefined {
@@ -62,14 +78,19 @@ function saveConversationId(key: string, conversationId: string): void {
 
 export async function routeMessage(msg: IncomingMessage): Promise<string> {
   const settings = getSettings();
-  const key = `${msg.connectionId}:${msg.senderId}`;
+  const key = msg.conversationKey ?? `${msg.connectionId}:${msg.senderId}`;
+  const capabilityScopeKey = getChannelCapabilityScopeKey(msg);
+  let channelApprovalNotice: string | null = null;
 
   const senderAccess = await checkChannelSenderAccess({
     connectionId: msg.connectionId,
     channelId: msg.channelId,
     senderId: msg.senderId,
     senderName: msg.senderName,
+    conversationKey: key,
     replyTargetId: msg.replyTargetId,
+    replyThreadId: msg.replyThreadId,
+    replyMessageId: msg.replyMessageId,
     text: msg.text,
   });
 
@@ -107,10 +128,9 @@ export async function routeMessage(msg: IncomingMessage): Promise<string> {
     }
   }
 
-  // External messaging channels should not expose local agent tools.
-  // We still pass memory context into the system prompt, but avoid shell/file/web
-  // execution and agent-loop behaviors that can end in a non-text final turn.
-  const tools: ToolDefinition[] = [];
+  const tools = (await getToolsForIntent(intent)).filter(
+    (tool) => !CHANNEL_UNSUPPORTED_TOOLS.has(tool.function.name)
+  );
 
   // ── Memory context ────────────────────────────────────────────────────────
   let memoryContext: string | undefined;
@@ -135,21 +155,56 @@ export async function routeMessage(msg: IncomingMessage): Promise<string> {
     profileId: profile.id,
     model,
     tools,
+    agentSystemPrompt: intent === "task" ? AGENT_TASK_SYSTEM_PROMPT : undefined,
     memoryContext,
     memorySearchFn: createMemorySearchFn(LOCAL_USER),
     conversationSearchFn: createConversationSearchFn(),
-    autoApproveTools: true,
     includeToolTags: false,
     agentMode: intent,
+    permissionController: {
+      check: ({ capability }) =>
+        getChannelCapabilityDecision(msg.connectionId, capabilityScopeKey, capability),
+      onPrompt: ({ skillName, capability }) => {
+        const status = requestChannelCapabilityApproval({
+          connectionId: msg.connectionId,
+          channelId: msg.channelId,
+          scopeKey: capabilityScopeKey,
+          conversationKey: key,
+          senderId: msg.senderId,
+          senderName: msg.senderName,
+          replyTargetId: msg.replyTargetId,
+          replyThreadId: msg.replyThreadId,
+          replyMessageId: msg.replyMessageId,
+          skillName,
+          capability,
+          text: msg.text,
+        });
+        channelApprovalNotice =
+          status === "created"
+            ? `I need approval in the Elaine app before I can use ${skillName} (${capability}) in this chat. Open Elaine Notifications and choose Allow once, Allow in this chat, or Deny.`
+            : `I'm still waiting for approval in the Elaine app to use ${skillName} (${capability}) in this chat. Open Elaine Notifications to Allow once, Allow in this chat, or Deny.`;
+      },
+      onConsume: ({ capability }) => {
+        consumeChannelCapabilityGrantOnce(msg.connectionId, capabilityScopeKey, capability);
+      },
+    },
   });
 
   saveConversationId(key, generation.conversation.id);
 
   let content = "";
   let reasoning = "";
+  let permissionRequested = false;
   for await (const chunk of generation.stream) {
     if (chunk.content) content += chunk.content;
     if (chunk.reasoning) reasoning += chunk.reasoning;
+    if (chunk.permissionRequired) permissionRequested = true;
+  }
+
+  if (permissionRequested) {
+    deleteMessagesFromId(generation.userMessageId);
+    generation.fail();
+    return channelApprovalNotice ?? "I need approval in the Elaine app before I can continue.";
   }
 
   generation.finalize(content, reasoning, [], []);

@@ -7,8 +7,12 @@ import { notifyMemoryOfMessage } from "../memory/index.js";
 import type {
   AppNotification,
   AppSettings,
+  ChannelCapabilityGrant,
+  ChannelCapabilityGrantType,
   ChannelConnection,
   ChannelId,
+  ChannelRoutingMode,
+  PendingChannelCapabilityRequest,
   PendingChannelMessage,
   ChannelSenderPermission,
   ChannelSenderStatus,
@@ -986,6 +990,37 @@ export function createNotification(data: {
   return getNotification(data.id)!;
 }
 
+export function updateNotification(
+  id: string,
+  patch: Partial<{
+    title: string;
+    body: string | null;
+    targetUrl: string | null;
+    metadata: Record<string, unknown> | null;
+    read: boolean;
+  }>
+): AppNotification | null {
+  const current = getNotification(id);
+  if (!current) {
+    return null;
+  }
+
+  db.prepare(
+    `UPDATE app_notifications
+     SET title = ?, body = ?, target_url = ?, metadata = ?, read = ?
+     WHERE id = ?`
+  ).run(
+    patch.title ?? current.title,
+    patch.body === undefined ? current.body : patch.body,
+    patch.targetUrl === undefined ? current.targetUrl : patch.targetUrl,
+    JSON.stringify(patch.metadata === undefined ? current.metadata : patch.metadata),
+    patch.read === undefined ? (current.read ? 1 : 0) : patch.read ? 1 : 0,
+    id
+  );
+
+  return getNotification(id);
+}
+
 interface ChannelSenderPermissionRow {
   connection_id: string;
   channel_id: string;
@@ -1016,7 +1051,10 @@ interface PendingChannelMessageRow {
   channel_id: string;
   sender_id: string;
   sender_name: string | null;
+  conversation_key: string;
   reply_target_id: string;
+  reply_thread_id: string | null;
+  reply_message_id: string | null;
   text: string;
   created_at: string;
 }
@@ -1028,7 +1066,68 @@ function mapPendingChannelMessageRow(row: PendingChannelMessageRow): PendingChan
     channelId: row.channel_id as ChannelId,
     senderId: row.sender_id,
     senderName: row.sender_name,
+    conversationKey: row.conversation_key || `${row.connection_id}:${row.sender_id}`,
     replyTargetId: row.reply_target_id,
+    replyThreadId: row.reply_thread_id,
+    replyMessageId: row.reply_message_id,
+    text: row.text,
+    createdAt: row.created_at,
+  };
+}
+
+interface ChannelCapabilityGrantRow {
+  connection_id: string;
+  conversation_key: string;
+  capability: string;
+  decision: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapChannelCapabilityGrantRow(row: ChannelCapabilityGrantRow): ChannelCapabilityGrant {
+  return {
+    connectionId: row.connection_id,
+    conversationKey: row.conversation_key,
+    capability: row.capability,
+    decision: row.decision as ChannelCapabilityGrantType,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+interface PendingChannelCapabilityRequestRow {
+  id: string;
+  connection_id: string;
+  channel_id: string;
+  scope_key: string;
+  conversation_key: string;
+  sender_id: string;
+  sender_name: string | null;
+  reply_target_id: string;
+  reply_thread_id: string | null;
+  reply_message_id: string | null;
+  capability: string;
+  skill_name: string;
+  text: string;
+  created_at: string;
+}
+
+function mapPendingChannelCapabilityRequestRow(
+  row: PendingChannelCapabilityRequestRow
+): PendingChannelCapabilityRequest {
+  return {
+    id: row.id,
+    connectionId: row.connection_id,
+    channelId: row.channel_id as ChannelId,
+    scopeKey: row.scope_key || row.conversation_key,
+    conversationKey: row.conversation_key,
+    senderId: row.sender_id,
+    senderName: row.sender_name,
+    replyTargetId: row.reply_target_id,
+    replyThreadId: row.reply_thread_id,
+    replyMessageId: row.reply_message_id,
+    capability: row.capability,
+    skillName: row.skill_name,
     text: row.text,
     createdAt: row.created_at,
   };
@@ -1107,21 +1206,30 @@ export function createPendingChannelMessage(data: {
   channelId: ChannelId;
   senderId: string;
   senderName: string | null;
+  conversationKey: string;
   replyTargetId: string;
+  replyThreadId: string | null;
+  replyMessageId: string | null;
   text: string;
   createdAt: string;
 }): PendingChannelMessage {
   db.prepare(
     `INSERT INTO channel_pending_messages
-       (id, connection_id, channel_id, sender_id, sender_name, reply_target_id, text, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+       (
+         id, connection_id, channel_id, sender_id, sender_name, conversation_key,
+         reply_target_id, reply_thread_id, reply_message_id, text, created_at
+       )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     data.id,
     data.connectionId,
     data.channelId,
     data.senderId,
     data.senderName,
+    data.conversationKey,
     data.replyTargetId,
+    data.replyThreadId,
+    data.replyMessageId,
     data.text,
     data.createdAt
   );
@@ -1132,7 +1240,10 @@ export function createPendingChannelMessage(data: {
     channelId: data.channelId,
     senderId: data.senderId,
     senderName: data.senderName,
+    conversationKey: data.conversationKey,
     replyTargetId: data.replyTargetId,
+    replyThreadId: data.replyThreadId,
+    replyMessageId: data.replyMessageId,
     text: data.text,
     createdAt: data.createdAt,
   };
@@ -1175,6 +1286,212 @@ export function deletePendingChannelMessagesForSender(
   );
 }
 
+export function getChannelCapabilityGrant(
+  connectionId: string,
+  conversationKey: string,
+  capability: string
+): ChannelCapabilityGrant | null {
+  const row = db
+    .prepare(
+      `SELECT * FROM channel_capability_grants
+       WHERE connection_id = ? AND conversation_key = ? AND capability = ?`
+    )
+    .get(connectionId, conversationKey, capability) as ChannelCapabilityGrantRow | undefined;
+  return row ? mapChannelCapabilityGrantRow(row) : null;
+}
+
+export function listChannelCapabilityGrants(connectionId?: string): ChannelCapabilityGrant[] {
+  const rows = connectionId
+    ? db
+        .prepare(
+          `SELECT * FROM channel_capability_grants
+           WHERE connection_id = ?
+           ORDER BY updated_at DESC, conversation_key ASC, capability ASC`
+        )
+        .all(connectionId)
+    : db
+        .prepare(
+          `SELECT * FROM channel_capability_grants
+           ORDER BY updated_at DESC, connection_id ASC, conversation_key ASC, capability ASC`
+        )
+        .all();
+
+  return (rows as ChannelCapabilityGrantRow[]).map(mapChannelCapabilityGrantRow);
+}
+
+export function upsertChannelCapabilityGrant(data: {
+  connectionId: string;
+  conversationKey: string;
+  capability: string;
+  decision: ChannelCapabilityGrantType;
+}): ChannelCapabilityGrant {
+  const now = nowIso();
+  const existing = getChannelCapabilityGrant(
+    data.connectionId,
+    data.conversationKey,
+    data.capability
+  );
+  db.prepare(
+    `INSERT INTO channel_capability_grants
+       (connection_id, conversation_key, capability, decision, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(connection_id, conversation_key, capability) DO UPDATE SET
+       decision = excluded.decision,
+       updated_at = excluded.updated_at`
+  ).run(
+    data.connectionId,
+    data.conversationKey,
+    data.capability,
+    data.decision,
+    existing?.createdAt ?? now,
+    now
+  );
+
+  return getChannelCapabilityGrant(data.connectionId, data.conversationKey, data.capability)!;
+}
+
+export function deleteChannelCapabilityGrant(
+  connectionId: string,
+  conversationKey: string,
+  capability: string
+): void {
+  db.prepare(
+    `DELETE FROM channel_capability_grants
+     WHERE connection_id = ? AND conversation_key = ? AND capability = ?`
+  ).run(connectionId, conversationKey, capability);
+}
+
+export function deleteChannelCapabilityGrantsForConversation(
+  connectionId: string,
+  conversationKey: string
+): void {
+  db.prepare(
+    `DELETE FROM channel_capability_grants
+     WHERE connection_id = ? AND conversation_key = ?`
+  ).run(connectionId, conversationKey);
+}
+
+export function deleteChannelCapabilityGrantsForConnection(connectionId: string): void {
+  db.prepare("DELETE FROM channel_capability_grants WHERE connection_id = ?").run(connectionId);
+}
+
+export function createPendingChannelCapabilityRequest(data: {
+  id: string;
+  connectionId: string;
+  channelId: ChannelId;
+  scopeKey: string;
+  conversationKey: string;
+  senderId: string;
+  senderName: string | null;
+  replyTargetId: string;
+  replyThreadId: string | null;
+  replyMessageId: string | null;
+  capability: string;
+  skillName: string;
+  text: string;
+  createdAt: string;
+}): PendingChannelCapabilityRequest {
+  db.prepare(
+    `INSERT INTO channel_pending_capability_requests
+       (
+         id, connection_id, channel_id, scope_key, conversation_key, sender_id, sender_name,
+         reply_target_id, reply_thread_id, reply_message_id, capability, skill_name, text, created_at
+       )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    data.id,
+    data.connectionId,
+    data.channelId,
+    data.scopeKey,
+    data.conversationKey,
+    data.senderId,
+    data.senderName,
+    data.replyTargetId,
+    data.replyThreadId,
+    data.replyMessageId,
+    data.capability,
+    data.skillName,
+    data.text,
+    data.createdAt
+  );
+
+  return {
+    id: data.id,
+    connectionId: data.connectionId,
+    channelId: data.channelId,
+    scopeKey: data.scopeKey,
+    conversationKey: data.conversationKey,
+    senderId: data.senderId,
+    senderName: data.senderName,
+    replyTargetId: data.replyTargetId,
+    replyThreadId: data.replyThreadId,
+    replyMessageId: data.replyMessageId,
+    capability: data.capability,
+    skillName: data.skillName,
+    text: data.text,
+    createdAt: data.createdAt,
+  };
+}
+
+export function listPendingChannelCapabilityRequests(
+  connectionId: string,
+  scopeKey?: string,
+  capability?: string
+): PendingChannelCapabilityRequest[] {
+  let rows: unknown[];
+
+  if (scopeKey && capability) {
+    rows = db
+      .prepare(
+        `SELECT * FROM channel_pending_capability_requests
+         WHERE connection_id = ? AND scope_key = ? AND capability = ?
+         ORDER BY created_at ASC`
+      )
+      .all(connectionId, scopeKey, capability);
+  } else if (scopeKey) {
+    rows = db
+      .prepare(
+        `SELECT * FROM channel_pending_capability_requests
+         WHERE connection_id = ? AND scope_key = ?
+         ORDER BY created_at ASC`
+      )
+      .all(connectionId, scopeKey);
+  } else {
+    rows = db
+      .prepare(
+        `SELECT * FROM channel_pending_capability_requests
+         WHERE connection_id = ?
+         ORDER BY created_at ASC`
+      )
+      .all(connectionId);
+  }
+
+  return (rows as PendingChannelCapabilityRequestRow[]).map(mapPendingChannelCapabilityRequestRow);
+}
+
+export function deletePendingChannelCapabilityRequest(id: string): void {
+  db.prepare("DELETE FROM channel_pending_capability_requests WHERE id = ?").run(id);
+}
+
+export function deletePendingChannelCapabilityRequests(
+  connectionId: string,
+  scopeKey: string,
+  capability?: string
+): void {
+  if (capability) {
+    db.prepare(
+      `DELETE FROM channel_pending_capability_requests
+       WHERE connection_id = ? AND scope_key = ? AND capability = ?`
+    ).run(connectionId, scopeKey, capability);
+    return;
+  }
+
+  db.prepare(
+    `DELETE FROM channel_pending_capability_requests
+     WHERE connection_id = ? AND scope_key = ?`
+  ).run(connectionId, scopeKey);
+}
+
 export function markNotificationRead(id: string, read = true): void {
   db.prepare("UPDATE app_notifications SET read = ? WHERE id = ?").run(read ? 1 : 0, id);
 }
@@ -1207,6 +1524,8 @@ interface ChannelConnectionRow {
   account_name: string | null;
   account_email: string | null;
   account_avatar: string | null;
+  routing_mode: string;
+  reply_in_thread: number;
   scopes: string;
   created_at: string;
   updated_at: string;
@@ -1220,6 +1539,8 @@ function mapChannelConnectionRow(row: ChannelConnectionRow): ChannelConnection {
     accountName: row.account_name,
     accountEmail: row.account_email,
     accountAvatar: row.account_avatar,
+    routingMode: (row.routing_mode || "direct") as ChannelRoutingMode,
+    replyInThread: row.reply_in_thread !== 0,
     scopes: JSON.parse(row.scopes) as string[],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -1250,6 +1571,8 @@ export function upsertChannelConnection(data: {
   accessToken: string;
   refreshToken: string | null;
   tokenExpiresAt: string | null;
+  routingMode: ChannelRoutingMode;
+  replyInThread: boolean;
   scopes: string[];
   createdAt: string;
   updatedAt: string;
@@ -1258,8 +1581,9 @@ export function upsertChannelConnection(data: {
     `
     INSERT INTO oauth_connections
       (id, provider, account_id, account_name, account_email, account_avatar,
-       access_token, refresh_token, token_expires_at, scopes, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       access_token, refresh_token, token_expires_at, routing_mode, reply_in_thread,
+       scopes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(provider, account_id) DO UPDATE SET
       account_name = excluded.account_name,
       account_email = excluded.account_email,
@@ -1280,6 +1604,8 @@ export function upsertChannelConnection(data: {
     data.accessToken,
     data.refreshToken,
     data.tokenExpiresAt,
+    data.routingMode,
+    data.replyInThread ? 1 : 0,
     JSON.stringify(data.scopes),
     data.createdAt,
     data.updatedAt
@@ -1303,6 +1629,38 @@ export function getChannelConnectionToken(
   };
 }
 
+export function updateChannelConnectionSettings(
+  id: string,
+  patch: {
+    routingMode?: ChannelRoutingMode;
+    replyInThread?: boolean;
+  }
+): ChannelConnection | null {
+  const current = getChannelConnection(id);
+  if (!current) {
+    return null;
+  }
+
+  db.prepare(
+    `UPDATE oauth_connections
+     SET routing_mode = ?, reply_in_thread = ?, updated_at = ?
+     WHERE id = ?`
+  ).run(
+    patch.routingMode ?? current.routingMode,
+    patch.replyInThread === undefined
+      ? current.replyInThread
+        ? 1
+        : 0
+      : patch.replyInThread
+        ? 1
+        : 0,
+    nowIso(),
+    id
+  );
+
+  return getChannelConnection(id);
+}
+
 export function deleteChannelConnection(id: string): void {
   db.prepare("DELETE FROM oauth_connections WHERE id = ?").run(id);
 }
@@ -1310,10 +1668,12 @@ export function deleteChannelConnection(id: string): void {
 export function deleteChannelConnectionWithRelatedData(id: string): void {
   db.prepare("DELETE FROM channel_sender_permissions WHERE connection_id = ?").run(id);
   db.prepare("DELETE FROM channel_pending_messages WHERE connection_id = ?").run(id);
+  db.prepare("DELETE FROM channel_capability_grants WHERE connection_id = ?").run(id);
+  db.prepare("DELETE FROM channel_pending_capability_requests WHERE connection_id = ?").run(id);
   db.prepare("DELETE FROM channel_conversations WHERE channel_key LIKE ?").run(`${id}:%`);
   db.prepare(
     `DELETE FROM app_notifications
-     WHERE type = 'channel_permission_request'
+     WHERE type IN ('channel_permission_request', 'channel_capability_request')
        AND json_extract(metadata, '$.connectionId') = ?`
   ).run(id);
   deleteChannelConnection(id);
@@ -1323,6 +1683,8 @@ export function deleteChannelConnectionWithRelatedData(id: string): void {
 export function resetAllData(): void {
   db.prepare("DELETE FROM oauth_connections").run();
   db.prepare("DELETE FROM channel_sender_permissions").run();
+  db.prepare("DELETE FROM channel_capability_grants").run();
+  db.prepare("DELETE FROM channel_pending_capability_requests").run();
   db.prepare("DELETE FROM app_notifications").run();
   db.prepare("DELETE FROM scheduled_jobs").run();
   db.prepare("DELETE FROM conversations").run(); // messages cascade

@@ -5,9 +5,11 @@ import { api } from "../lib/api";
 import { notificationStore } from "../lib/notification-store";
 import type {
   AppNotification,
+  ChannelCapabilityGrant,
   ChannelDescriptor,
   ChannelConnection,
   ChannelId,
+  ChannelRoutingMode,
   ChannelSenderPermission,
 } from "../lib/types";
 
@@ -22,17 +24,81 @@ const CHANNEL_ICONS: Record<ChannelId, React.ReactNode> = {
   slack: <MessageCircle size={iconSize} />,
 };
 
+const ROUTING_OPTIONS: Array<{
+  value: ChannelRoutingMode;
+  label: string;
+  description: string;
+}> = [
+  { value: "direct", label: "DMs only", description: "Only direct/private chats trigger replies." },
+  {
+    value: "mentions",
+    label: "Mentions",
+    description: "Direct chats always work; group replies require a mention.",
+  },
+  { value: "all", label: "All messages", description: "Reply to every visible message." },
+];
+
+function supportsThreadReplies(provider: ChannelId): boolean {
+  return provider === "slack" || provider === "discord" || provider === "telegram";
+}
+
+function describeConversationKey(connectionId: string, conversationKey: string): string {
+  if (conversationKey.startsWith(`${connectionId}:target:`)) {
+    return `target:${conversationKey.slice(`${connectionId}:target:`.length)}`;
+  }
+
+  if (conversationKey.startsWith(`${connectionId}:`)) {
+    return conversationKey.slice(connectionId.length + 1);
+  }
+
+  return conversationKey;
+}
+
+function formatCapabilityDecision(decision: ChannelCapabilityGrant["decision"]): string {
+  if (decision === "chat") {
+    return "Allowed in this chat";
+  }
+  if (decision === "once") {
+    return "Allowed once";
+  }
+  return "Denied";
+}
+
+function formatTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString();
+}
+
 // ─── Channel card ─────────────────────────────────────────────────────────────
 
 interface ChannelCardProps {
   channel: ChannelDescriptor;
   connection: ChannelConnection | undefined;
+  saving: boolean;
   onConnect(provider: ChannelId): void;
   onDisconnect(connection: ChannelConnection): void;
+  onUpdateSettings(
+    connection: ChannelConnection,
+    patch: Partial<Pick<ChannelConnection, "routingMode" | "replyInThread">>
+  ): void;
 }
 
-function ChannelCard({ channel, connection, onConnect, onDisconnect }: ChannelCardProps) {
+function ChannelCard({
+  channel,
+  connection,
+  saving,
+  onConnect,
+  onDisconnect,
+  onUpdateSettings,
+}: ChannelCardProps) {
   const connected = !!connection;
+  const selectedRouting =
+    ROUTING_OPTIONS.find((option) => option.value === connection?.routingMode) ??
+    ROUTING_OPTIONS[0];
 
   return (
     <div
@@ -89,6 +155,7 @@ function ChannelCard({ channel, connection, onConnect, onDisconnect }: ChannelCa
           {connected ? (
             <button
               type="button"
+              disabled={saving}
               onClick={() => onDisconnect(connection!)}
               className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors"
               style={{
@@ -103,6 +170,7 @@ function ChannelCard({ channel, connection, onConnect, onDisconnect }: ChannelCa
           ) : (
             <button
               type="button"
+              disabled={saving}
               onClick={() => onConnect(channel.id)}
               className="flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors"
               style={{
@@ -115,6 +183,76 @@ function ChannelCard({ channel, connection, onConnect, onDisconnect }: ChannelCa
             </button>
           )}
         </div>
+
+        {connected && (
+          <div
+            className="pt-4 mt-2 flex flex-col gap-3"
+            style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}
+          >
+            <label className="flex flex-col gap-1">
+              <span
+                className="text-[11px] uppercase tracking-[0.18em]"
+                style={{ color: "rgba(255,255,255,0.35)" }}
+              >
+                Routing
+              </span>
+              <select
+                value={connection.routingMode}
+                disabled={saving}
+                onChange={(event) =>
+                  onUpdateSettings(connection, {
+                    routingMode: event.target.value as ChannelRoutingMode,
+                  })
+                }
+                className="w-full rounded-xl px-3 py-2 text-sm outline-none"
+                style={{
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  color: "rgba(255,255,255,0.88)",
+                }}
+              >
+                {ROUTING_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <p className="text-[11px] leading-relaxed" style={{ color: "rgba(255,255,255,0.38)" }}>
+              {selectedRouting.description}
+            </p>
+
+            {supportsThreadReplies(channel.id) && (
+              <label
+                className="flex items-center justify-between gap-3 rounded-xl px-3 py-2"
+                style={{
+                  background: "rgba(255,255,255,0.03)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                }}
+              >
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-sm" style={{ color: "rgba(255,255,255,0.88)" }}>
+                    Reply in thread
+                  </span>
+                  <span className="text-[11px]" style={{ color: "rgba(255,255,255,0.35)" }}>
+                    Keep group replies attached to the original message when supported.
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={connection.replyInThread}
+                  disabled={saving}
+                  onChange={(event) =>
+                    onUpdateSettings(connection, {
+                      replyInThread: event.target.checked,
+                    })
+                  }
+                />
+              </label>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -127,7 +265,10 @@ export function ConnectionsPage() {
   const [channels, setChannels] = useState<ChannelDescriptor[]>([]);
   const [connections, setConnections] = useState<ChannelConnection[]>([]);
   const [senderPermissions, setSenderPermissions] = useState<ChannelSenderPermission[]>([]);
+  const [capabilityGrants, setCapabilityGrants] = useState<ChannelCapabilityGrant[]>([]);
   const [pendingNotifications, setPendingNotifications] = useState<AppNotification[]>([]);
+  const [savingConnectionId, setSavingConnectionId] = useState<string | null>(null);
+  const [grantActionKey, setGrantActionKey] = useState<string | null>(null);
 
   useEffect(() => {
     void notificationStore.init();
@@ -135,11 +276,13 @@ export function ConnectionsPage() {
       api.listChannels(),
       api.listChannelAccounts(),
       api.listChannelSenders(),
+      api.listChannelCapabilities(),
       api.listNotifications({ limit: 100 }),
-    ]).then(([chans, conns, senders, notifications]) => {
+    ]).then(([chans, conns, senders, grants, notifications]) => {
       setChannels(chans);
       setConnections(conns);
       setSenderPermissions(senders);
+      setCapabilityGrants(grants);
       setPendingNotifications(
         notifications.filter((notification) => notification.type === "channel_permission_request")
       );
@@ -163,6 +306,22 @@ export function ConnectionsPage() {
     await api.disconnectChannel(connection.id);
     setConnections((prev) => prev.filter((c) => c.id !== connection.id));
     setSenderPermissions((prev) => prev.filter((entry) => entry.connectionId !== connection.id));
+    setCapabilityGrants((prev) => prev.filter((entry) => entry.connectionId !== connection.id));
+  }
+
+  async function handleUpdateChannelSettings(
+    connection: ChannelConnection,
+    patch: Partial<Pick<ChannelConnection, "routingMode" | "replyInThread">>
+  ) {
+    setSavingConnectionId(connection.id);
+    try {
+      const updated = await api.updateChannelAccount(connection.id, patch);
+      setConnections((prev) =>
+        prev.map((current) => (current.id === updated.id ? updated : current))
+      );
+    } finally {
+      setSavingConnectionId(null);
+    }
   }
 
   async function updateSenderPermission(
@@ -227,6 +386,39 @@ export function ConnectionsPage() {
     );
   }
 
+  async function revokeCapabilityGrant(payload: {
+    connectionId: string;
+    conversationKey?: string;
+    capability?: string;
+  }) {
+    const actionKey = [
+      payload.connectionId,
+      payload.conversationKey ?? "*",
+      payload.capability ?? "*",
+    ].join(":");
+
+    setGrantActionKey(actionKey);
+    try {
+      await api.revokeChannelCapability(payload);
+      setCapabilityGrants((prev) =>
+        prev.filter((entry) => {
+          if (entry.connectionId !== payload.connectionId) {
+            return true;
+          }
+          if (payload.conversationKey && entry.conversationKey !== payload.conversationKey) {
+            return true;
+          }
+          if (payload.capability && entry.capability !== payload.capability) {
+            return true;
+          }
+          return false;
+        })
+      );
+    } finally {
+      setGrantActionKey(null);
+    }
+  }
+
   const unresolvedPendingNotifications = pendingNotifications.filter((notification) => {
     const metadata = notification.metadata;
     if (
@@ -242,6 +434,13 @@ export function ConnectionsPage() {
         entry.connectionId === metadata.connectionId && entry.senderId === metadata.senderId
     );
   });
+
+  const capabilityConnections = connections
+    .map((connection) => ({
+      connection,
+      grants: capabilityGrants.filter((entry) => entry.connectionId === connection.id),
+    }))
+    .filter((entry) => entry.grants.length > 0);
 
   return (
     <div
@@ -276,15 +475,20 @@ export function ConnectionsPage() {
             className="grid gap-4"
             style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}
           >
-            {channels.map((channel) => (
-              <ChannelCard
-                key={channel.id}
-                channel={channel}
-                connection={connections.find((c) => c.provider === channel.id)}
-                onConnect={handleConnect}
-                onDisconnect={handleDisconnect}
-              />
-            ))}
+            {channels.map((channel) => {
+              const connection = connections.find((item) => item.provider === channel.id);
+              return (
+                <ChannelCard
+                  key={channel.id}
+                  channel={channel}
+                  connection={connection}
+                  saving={savingConnectionId === connection?.id}
+                  onConnect={handleConnect}
+                  onDisconnect={handleDisconnect}
+                  onUpdateSettings={handleUpdateChannelSettings}
+                />
+              );
+            })}
           </div>
 
           <div className="flex flex-col gap-3">
@@ -469,6 +673,164 @@ export function ConnectionsPage() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold" style={{ color: "rgba(255,255,255,0.9)" }}>
+                Capability Grants
+              </h2>
+              <span className="text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
+                Review and revoke chat-scoped channel tool approvals.
+              </span>
+            </div>
+
+            <div
+              className="rounded-2xl overflow-hidden"
+              style={{
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.08)",
+              }}
+            >
+              {capabilityConnections.length === 0 ? (
+                <div className="px-4 py-5 text-sm" style={{ color: "rgba(255,255,255,0.35)" }}>
+                  No saved capability grants yet.
+                </div>
+              ) : (
+                <div className="divide-y" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
+                  {capabilityConnections.map(({ connection, grants }) => (
+                    <div key={connection.id} className="px-4 py-4 flex flex-col gap-3">
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div>
+                          <div
+                            className="text-sm font-medium"
+                            style={{ color: "rgba(255,255,255,0.9)" }}
+                          >
+                            {connection.accountName ??
+                              connection.accountEmail ??
+                              connection.accountId}
+                          </div>
+                          <div className="text-xs mt-1" style={{ color: "rgba(255,255,255,0.35)" }}>
+                            {connection.provider} · {grants.length} saved grant
+                            {grants.length === 1 ? "" : "s"}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={grantActionKey === `${connection.id}:*:*`}
+                          onClick={() =>
+                            void revokeCapabilityGrant({ connectionId: connection.id })
+                          }
+                          className="px-3 py-1.5 rounded-lg text-xs"
+                          style={{
+                            background: "rgba(239,68,68,0.12)",
+                            color: "#f87171",
+                          }}
+                        >
+                          Revoke all
+                        </button>
+                      </div>
+
+                      <div className="divide-y" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
+                        {grants.map((entry) => {
+                          const revokeOneKey = [
+                            entry.connectionId,
+                            entry.conversationKey,
+                            entry.capability,
+                          ].join(":");
+                          const revokeChatKey = [
+                            entry.connectionId,
+                            entry.conversationKey,
+                            "*",
+                          ].join(":");
+
+                          return (
+                            <div
+                              key={`${entry.connectionId}:${entry.conversationKey}:${entry.capability}`}
+                              className="py-3 flex items-center gap-3"
+                            >
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span
+                                    className="text-sm font-medium"
+                                    style={{ color: "rgba(255,255,255,0.9)" }}
+                                  >
+                                    {entry.capability}
+                                  </span>
+                                  <span
+                                    className="text-[10px] px-2 py-0.5 rounded-full"
+                                    style={{
+                                      background:
+                                        entry.decision === "deny"
+                                          ? "rgba(239,68,68,0.14)"
+                                          : "rgba(56,189,248,0.14)",
+                                      color: entry.decision === "deny" ? "#f87171" : "#67e8f9",
+                                    }}
+                                  >
+                                    {formatCapabilityDecision(entry.decision)}
+                                  </span>
+                                </div>
+                                <div
+                                  className="text-xs mt-1 break-all"
+                                  style={{ color: "rgba(255,255,255,0.35)" }}
+                                >
+                                  Chat:{" "}
+                                  {describeConversationKey(connection.id, entry.conversationKey)}
+                                </div>
+                                <div
+                                  className="text-xs mt-1"
+                                  style={{ color: "rgba(255,255,255,0.35)" }}
+                                >
+                                  Updated {formatTimestamp(entry.updatedAt)}
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 flex-wrap justify-end">
+                                <button
+                                  type="button"
+                                  disabled={grantActionKey === revokeChatKey}
+                                  onClick={() =>
+                                    void revokeCapabilityGrant({
+                                      connectionId: entry.connectionId,
+                                      conversationKey: entry.conversationKey,
+                                    })
+                                  }
+                                  className="px-3 py-1.5 rounded-lg text-xs"
+                                  style={{
+                                    background: "rgba(255,255,255,0.08)",
+                                    color: "rgba(255,255,255,0.7)",
+                                  }}
+                                >
+                                  Revoke chat
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={grantActionKey === revokeOneKey}
+                                  onClick={() =>
+                                    void revokeCapabilityGrant({
+                                      connectionId: entry.connectionId,
+                                      conversationKey: entry.conversationKey,
+                                      capability: entry.capability,
+                                    })
+                                  }
+                                  className="px-3 py-1.5 rounded-lg text-xs"
+                                  style={{
+                                    background: "rgba(239,68,68,0.12)",
+                                    color: "#f87171",
+                                  }}
+                                >
+                                  Revoke
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

@@ -119,7 +119,13 @@ Connect local messaging channels so Elaine can receive inbound messages and repl
 - WhatsApp connects through a QR-based local session bootstrap
 - Unknown senders are gated per sender before any inbound message is routed into an Elaine conversation
 - First inbound messages are queued until you explicitly approve or block the sender
-- Channel replies are plain-text only — remote senders do not get access to the local toolchain
+- Channel accounts can route replies by `direct`, `mentions`, or `all`, with thread-aware replies where supported
+- New channel connections default to `mentions`: direct/private chats still work, while group chats require a mention before Elaine replies
+- Mention handling is channel-aware: Telegram looks for `@botusername`, Slack and Discord use native mentions, and WhatsApp uses the platform mention metadata in group chats
+- Channel agents can use the normal chat toolchain, but sensitive capability tiers (`network`, `filesystem_read`, `filesystem_write`, `shell`) require a local approval in the app
+- Capability approvals support **Allow once**, **Allow in this chat**, or **Deny**, and the decision is saved per channel chat to avoid repeated prompts
+- Capability grants are grouped by channel chat, not by the individual sender-specific conversation key, so approving `shell` once for a group chat covers later `shell_exec` calls in that same chat until you revoke it
+- The `/channels` page shows saved capability grants so you can revoke one grant, one chat, or all grants for an account at any time
 - Reconnecting an existing account restarts the runner with fresh credentials
 - Disconnect also removes queued sender requests, pending messages, approval notifications, and WhatsApp session state
 - Accessible from the sidebar profile menu → **Channels**
@@ -202,9 +208,71 @@ Add and configure providers, set default models per task type, and tune global b
 
 ## Quick start
 
+### One-shot install (recommended)
+
+If you already have **Node.js 20+** and **git** installed:
+
 ```bash
+npx -y github:w4coder/elaine-ai
+```
+
+The setup wizard will:
+
+1. Clone Elaine into a stable location (`~/.elaine` on Linux/macOS, `%LOCALAPPDATA%\Elaine` on Windows) so your data persists across runs.
+2. Install workspace dependencies.
+3. Ask whether to use **Ollama** or **vLLM**.
+4. Detect the provider — install and start it if missing (Ollama via `winget` on Windows or the official install script on Linux/macOS).
+5. Pull a recommended model (`qwen2.5:7b` by default, `qwen2.5:3b` for low-RAM machines) and run a tool-call smoke test.
+6. Seed the matching provider profile in the local database so the app boots ready-to-chat — no manual provider config needed.
+7. Build the client and server, start Fastify on `http://127.0.0.1:3001`, and open the browser.
+
+Re-running the same `npx` command later updates the existing install (`git pull --ff-only`) and re-runs the wizard against your existing data.
+
+> The install location can be overridden with `ELAINE_HOME=/path/to/dir`. The repo source can be overridden with `ELAINE_REPO=owner/repo`.
+
+#### Don't have Node yet?
+
+Use the bootstrap installer for your OS — it installs Node 20+ first, then hands off to the same `npx` flow.
+
+**Linux / macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/w4coder/elaine-ai/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/w4coder/elaine-ai/main/install.ps1 | iex
+```
+
+> **vLLM on Windows:** vLLM is not officially supported on native Windows. The wizard will refuse it; pick Ollama, or run the installer inside WSL.
+
+#### Where your data lives
+
+After install, all state lives under the stable home directory:
+
+| Path                                        | Contents                                 |
+| ------------------------------------------- | ---------------------------------------- |
+| `<ELAINE_HOME>/server/data/elaine.db`       | SQLite DB — chats, memory, settings      |
+| `<ELAINE_HOME>/server/data/setup-hint.json` | First-boot provider hint (auto-deleted)  |
+| `<ELAINE_HOME>/.env`                        | Optional environment overrides           |
+
+To wipe everything, delete `<ELAINE_HOME>` and re-run `npx -y github:w4coder/elaine-ai`.
+
+### Manual dev setup
+
+```bash
+git clone https://github.com/w4coder/elaine-ai
+cd elaine
 npm install
 npm run dev
+```
+
+Or run the wizard against your local checkout:
+
+```bash
+npm run setup
 ```
 
 - Client: http://127.0.0.1:5173
@@ -332,7 +400,7 @@ npm run format       # Prettier
 - [ ] **MCP (Model Context Protocol)** — connect any MCP server as a first-class tool source; auto-discover tools and resources from running MCP processes
 - [ ] Social integrations: Twitter / X, LinkedIn, Mastodon — post, search, fetch threads
 - [x] Messaging channel foundation — Slack, Discord, Telegram, and WhatsApp can connect locally, receive inbound messages, and route replies back through Elaine
-- [ ] Messaging channel polish — richer message types, mention-specific routing, reactions, and deeper thread awareness
+- [ ] Messaging channel polish — richer message types, reactions, and broader per-channel moderation controls
 - [ ] Productivity: Notion, Obsidian, Linear, GitHub Issues — create notes, manage tasks, file bugs
 - [ ] Communication: email sending via SMTP, calendar invites
 - [x] **Local messaging channel setup inside the app** — Telegram, WhatsApp, Discord, and Slack can be connected and managed without leaving Elaine; credentials are stored encrypted at rest
@@ -358,6 +426,22 @@ npm run format       # Prettier
 
 ### Unreleased
 
+- No unreleased entries yet.
+
+### 0.6.0 — One-shot install
+
+- New `npx -y github:w4coder/elaine-ai` entrypoint runs an interactive setup wizard ([scripts/setup.mjs](scripts/setup.mjs)) — installs deps, picks provider, installs/starts Ollama or vLLM, pulls and smoke-tests a model, builds, starts the server, opens the browser
+- Bootstrap installers for users without Node — [install.sh](install.sh) (Linux/macOS, installs Node via nvm) and [install.ps1](install.ps1) (Windows, installs Node via winget)
+- Stable install location: the wizard relocates from npm's transient `_npx` cache into `~/.elaine` (or `%LOCALAPPDATA%\Elaine` on Windows) on first run, so the SQLite database, memory, and settings persist across upgrades. Override with `ELAINE_HOME`
+- First-boot provider seeding: setup writes `server/data/setup-hint.json`; on next start the server activates the matching profile, registers the chosen model, sets it as default + title model, and deletes the hint ([server/src/services/setupHint.ts](server/src/services/setupHint.ts))
+- Re-running `npx ...` performs `git pull --ff-only` against the stable install instead of a fresh clone
+- Windows: PATH is refreshed from the registry after `winget install Ollama.Ollama` so the freshly installed binary is reachable in the same Node process; falls back to `%LOCALAPPDATA%\Programs\Ollama\ollama.exe`
+- Linux: `ollama serve` is no longer double-spawned — the wizard waits for the systemd service the official installer registers before deciding to spawn a fallback
+- Health check now polls `/api/health` instead of the SPA index, so the browser only opens once the API is genuinely ready
+- `package.json` exposes `bin: { elaine: scripts/setup.mjs }` and an `npm run setup` script for in-checkout use
+
+### 0.5.0 — Channels, Permissions & Notifications
+
 #### Channels
 
 - New `/channels` flow for local messaging integrations: Telegram, WhatsApp, Discord, and Slack
@@ -368,7 +452,13 @@ npm run format       # Prettier
 - WhatsApp sessions are isolated per connection and reconnect automatically after the normal post-pairing restart
 - Reconnecting a stored channel account now restarts the active runner with the fresh credentials immediately
 - Disconnecting a channel now cleans sender permissions, pending inbound messages, queued approval notifications, conversation links, and local WhatsApp session state
-- Channel-originated messages now stay text-only and do not expose local agent tools such as shell, file, or web execution
+- Channel-originated messages can use the normal chat tools, but non-safe capability tiers now create in-app approval requests before they execute
+- Channel capability approvals support `Allow once`, `Allow in this chat`, and `Deny`, with grants persisted per channel conversation for future requests
+- Channel capability grants are now scoped to the channel chat itself, so a granted tier like `shell` covers later `shell_exec` calls in that same chat until revoked
+- The `/channels` page now lists saved capability grants with revoke actions for one grant, one chat, or an entire connected account
+- Channel accounts now expose routing controls for `direct`, `mentions`, or `all` message handling
+- New channel accounts now default to `mentions`; direct chats still work, while group chats require a platform-specific mention before Elaine replies
+- Slack, Discord, and Telegram can keep replies attached to the originating message/thread when enabled
 
 #### Local Dev
 
@@ -379,6 +469,7 @@ npm run format       # Prettier
 - **Notifications page** (`/notifications`) — persistent split-pane inbox backed by the `app_notifications` database table
 - Mark individual notifications read/unread, delete by row or from the detail view, open linked conversation
 - Channel approval notifications can be resolved directly from the inbox or the `/channels` page
+- Channel capability approvals now keep the notification visible while showing processing and completion status after a choice is made
 - Unread badge on the sidebar profile menu Notifications entry, updated in real-time via store subscription
 - Notification store bootstraps from the server on first load and syncs read/delete operations back via REST
 
@@ -400,7 +491,7 @@ npm run format       # Prettier
 
 - Visualizer restricted to genuinely necessary use cases — three strict conditions required before the agent may call the widget tool
 
-#### Earlier Unreleased
+#### App Polish
 
 - Settings "Danger zone" reset — typed confirmation wipes all data and restarts onboarding
 - Scheduled run conversation titles formatted as `YYYY-MM-DD — <job title>` (never AI-generated)

@@ -225,6 +225,7 @@ export interface AppNotification {
 }
 
 export type ChannelId = "telegram" | "whatsapp" | "discord" | "slack";
+export type ChannelRoutingMode = "direct" | "mentions" | "all";
 
 export type ChannelAuthType = "token" | "qr";
 
@@ -250,6 +251,8 @@ export interface ChannelConnection {
   accountName: string | null;
   accountEmail: string | null;
   accountAvatar: string | null;
+  routingMode: ChannelRoutingMode;
+  replyInThread: boolean;
   scopes: string[];
   createdAt: string;
   updatedAt: string;
@@ -274,7 +277,43 @@ export interface PendingChannelMessage {
   channelId: ChannelId;
   senderId: string;
   senderName: string | null;
+  conversationKey: string;
   replyTargetId: string;
+  replyThreadId: string | null;
+  replyMessageId: string | null;
+  text: string;
+  createdAt: string;
+}
+
+export interface ChannelReplyOptions {
+  threadId?: string | null;
+  replyMessageId?: string | null;
+}
+
+export type ChannelCapabilityGrantType = "once" | "chat" | "deny";
+
+export interface ChannelCapabilityGrant {
+  connectionId: string;
+  conversationKey: string;
+  capability: string;
+  decision: ChannelCapabilityGrantType;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PendingChannelCapabilityRequest {
+  id: string;
+  connectionId: string;
+  channelId: ChannelId;
+  scopeKey: string;
+  conversationKey: string;
+  senderId: string;
+  senderName: string | null;
+  replyTargetId: string;
+  replyThreadId: string | null;
+  replyMessageId: string | null;
+  capability: string;
+  skillName: string;
   text: string;
   createdAt: string;
 }

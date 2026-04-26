@@ -15,12 +15,18 @@ export async function processPendingMessagesForSender(
       channelId: pending.channelId,
       senderId: pending.senderId,
       senderName: pending.senderName,
+      conversationKey: pending.conversationKey,
       replyTargetId: pending.replyTargetId,
+      replyThreadId: pending.replyThreadId,
+      replyMessageId: pending.replyMessageId,
       text: pending.text,
     });
 
     if (reply) {
-      await sendChannelMessage(pending.connectionId, pending.replyTargetId, reply);
+      await sendChannelMessage(pending.connectionId, pending.replyTargetId, reply, {
+        threadId: pending.replyThreadId,
+        replyMessageId: pending.replyMessageId,
+      });
     }
 
     deletePendingChannelMessage(pending.id);

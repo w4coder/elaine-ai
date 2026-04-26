@@ -80,6 +80,7 @@ export interface ChatPayload {
   autoApproveTools?: boolean;
   /** When false, omit trailing tool recap tags from the final response. */
   includeToolTags?: boolean;
+  permissionController?: Parameters<typeof runAgentStream>[0]["permissionController"];
 }
 
 function getOllamaThinkSetting(model: string): boolean | "low" | "medium" | "high" {
@@ -153,7 +154,16 @@ function buildProviderMessages(
     );
   }
   if (memoryContext?.trim()) {
-    systemParts.push(memoryContext.trim());
+    systemParts.push(
+      [
+        "Retrieved local memory/context is available below.",
+        "Use it when it is relevant to the user's request.",
+        "Do not claim you lack access to previous analyses, chat history, or memory if this section contains relevant context.",
+        "If the memory is incomplete, answer from the available context and briefly note any uncertainty.",
+        "",
+        memoryContext.trim(),
+      ].join("\n")
+    );
   }
   if (agentSystemPrompt?.trim()) {
     systemParts.push(agentSystemPrompt.trim());
@@ -319,6 +329,7 @@ export async function generateAssistantReply(payload: ChatPayload): Promise<{
           mode: (payload.agentMode ?? "chat") as "chat" | "task" | "scheduled",
           autoApproveTools: payload.autoApproveTools,
           includeToolTags: payload.includeToolTags,
+          permissionController: payload.permissionController,
           skillContext: {
             conversationId: conversation.id,
             ...(payload.workspacePath ? { workspacePath: payload.workspacePath } : {}),

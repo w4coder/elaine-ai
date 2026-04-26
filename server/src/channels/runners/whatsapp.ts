@@ -20,6 +20,7 @@ import { getProjectRoot } from "../../db/database.js";
 import { formatReplyForChannel } from "../formatReply.js";
 import { routeMessage } from "../messageRouter.js";
 import { withTypingIndicator } from "../typing.js";
+import type { ChannelConnection, ChannelReplyOptions } from "../../types.js";
 
 function sessionsRoot(): string {
   const dir = resolve(getProjectRoot(), "server", "data", "sessions");
@@ -175,16 +176,16 @@ export async function* setupWhatsApp(connectionId: string): AsyncGenerator<Whats
 }
 
 export class WhatsAppRunner {
-  private connectionId: string;
+  private connection: ChannelConnection;
   private stopped = false;
   private sock: ReturnType<typeof makeWASocket> | null = null;
 
-  constructor(connectionId: string) {
-    this.connectionId = connectionId;
+  constructor(connection: ChannelConnection) {
+    this.connection = connection;
   }
 
   async start(): Promise<void> {
-    const dir = resolveSessionDir(this.connectionId);
+    const dir = resolveSessionDir(this.connection.id);
     if (!existsSync(dir)) return;
 
     await this.connect();
@@ -195,7 +196,7 @@ export class WhatsAppRunner {
     this.sock?.end(undefined);
   }
 
-  async sendMessage(targetId: string, text: string): Promise<void> {
+  async sendMessage(targetId: string, text: string, _options?: ChannelReplyOptions): Promise<void> {
     if (!this.sock) {
       throw new Error("WhatsApp runner is not connected");
     }
@@ -204,7 +205,7 @@ export class WhatsAppRunner {
 
   private async connect(): Promise<void> {
     const { version } = await fetchLatestBaileysVersion();
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir(this.connectionId));
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir(this.connection.id));
 
     this.sock = makeWASocket({
       version,
@@ -233,15 +234,32 @@ export class WhatsAppRunner {
         if (!text) continue;
         const jid = msg.key.remoteJid;
         if (!jid) continue;
+        const senderId = msg.key.participant ?? jid;
+        const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid ?? [];
 
-        void this.handleMessage(jid, text);
+        void this.handleMessage(jid, senderId, text, mentionedJids);
       }
     });
   }
 
-  private async handleMessage(jid: string, text: string): Promise<void> {
+  private async handleMessage(
+    jid: string,
+    senderId: string,
+    text: string,
+    mentionedJids: string[]
+  ): Promise<void> {
     if (!this.sock) return;
     try {
+      const isDirect = !jid.endsWith("@g.us");
+      const botJid = this.sock.user?.id?.split(":")[0] ?? null;
+      const isMention = !isDirect && !!botJid && mentionedJids.some((item) => item === botJid);
+      if (!this.shouldRouteMessage(isDirect, isMention)) {
+        return;
+      }
+
+      const conversationKey = isDirect
+        ? `${this.connection.id}:dm:${jid}`
+        : `${this.connection.id}:chat:${jid}:sender:${senderId}`;
       const reply = await withTypingIndicator(
         async () => {
           if (!this.sock) return;
@@ -250,10 +268,11 @@ export class WhatsAppRunner {
         },
         () =>
           routeMessage({
-            connectionId: this.connectionId,
+            connectionId: this.connection.id,
             channelId: "whatsapp",
-            senderId: jid,
+            senderId,
             senderName: null,
+            conversationKey,
             replyTargetId: jid,
             text,
           }),
@@ -267,6 +286,22 @@ export class WhatsAppRunner {
       // Ignore routing errors
     } finally {
       await this.sock?.sendPresenceUpdate("paused", jid).catch(() => {});
+    }
+  }
+
+  private shouldRouteMessage(isDirect: boolean, isMention: boolean): boolean {
+    if (isDirect) {
+      return true;
+    }
+
+    switch (this.connection.routingMode) {
+      case "all":
+        return true;
+      case "mentions":
+        return isMention;
+      case "direct":
+      default:
+        return false;
     }
   }
 }

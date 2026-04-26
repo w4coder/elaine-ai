@@ -173,12 +173,61 @@ db.exec(`
     channel_id TEXT NOT NULL,
     sender_id TEXT NOT NULL,
     sender_name TEXT,
+    conversation_key TEXT NOT NULL,
     reply_target_id TEXT NOT NULL,
+    reply_thread_id TEXT,
+    reply_message_id TEXT,
     text TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_channel_pending_messages_sender
     ON channel_pending_messages(connection_id, sender_id, created_at ASC);
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS channel_capability_grants (
+    connection_id TEXT NOT NULL,
+    conversation_key TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK(decision IN ('once', 'chat', 'deny')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (connection_id, conversation_key, capability)
+  );
+  CREATE INDEX IF NOT EXISTS idx_channel_capability_grants_lookup
+    ON channel_capability_grants(connection_id, conversation_key, updated_at DESC);
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS channel_pending_capability_requests (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    conversation_key TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    sender_name TEXT,
+    reply_target_id TEXT NOT NULL,
+    reply_thread_id TEXT,
+    reply_message_id TEXT,
+    capability TEXT NOT NULL,
+    skill_name TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_channel_pending_capability_requests_lookup
+    ON channel_pending_capability_requests(connection_id, scope_key, capability, created_at ASC);
+`);
+
+try {
+  db.exec(`ALTER TABLE channel_pending_capability_requests ADD COLUMN scope_key TEXT`);
+} catch {
+  // Column already exists
+}
+db.exec(`
+  UPDATE channel_pending_capability_requests
+  SET scope_key = connection_id || ':target:' || reply_target_id
+  WHERE scope_key IS NULL OR scope_key = ''
 `);
 
 db.exec(`
@@ -192,6 +241,8 @@ db.exec(`
     access_token TEXT NOT NULL,
     refresh_token TEXT,
     token_expires_at TEXT,
+    routing_mode TEXT NOT NULL DEFAULT 'direct',
+    reply_in_thread INTEGER NOT NULL DEFAULT 1,
     scopes TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -199,6 +250,38 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_oauth_connections_provider ON oauth_connections(provider);
 `);
+
+try {
+  db.exec(`ALTER TABLE channel_pending_messages ADD COLUMN conversation_key TEXT`);
+} catch {
+  // Column already exists
+}
+try {
+  db.exec(`ALTER TABLE channel_pending_messages ADD COLUMN reply_thread_id TEXT`);
+} catch {
+  // Column already exists
+}
+try {
+  db.exec(`ALTER TABLE channel_pending_messages ADD COLUMN reply_message_id TEXT`);
+} catch {
+  // Column already exists
+}
+db.exec(`
+  UPDATE channel_pending_messages
+  SET conversation_key = connection_id || ':' || sender_id
+  WHERE conversation_key IS NULL OR conversation_key = ''
+`);
+
+try {
+  db.exec(`ALTER TABLE oauth_connections ADD COLUMN routing_mode TEXT NOT NULL DEFAULT 'direct'`);
+} catch {
+  // Column already exists
+}
+try {
+  db.exec(`ALTER TABLE oauth_connections ADD COLUMN reply_in_thread INTEGER NOT NULL DEFAULT 1`);
+} catch {
+  // Column already exists
+}
 
 const settingsRow = db.prepare("SELECT value FROM settings WHERE key = ?").get("app_settings") as
   | { value: string }

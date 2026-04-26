@@ -21,7 +21,10 @@ export interface ChannelSenderGateInput {
   channelId: ChannelId;
   senderId: string;
   senderName: string | null;
+  conversationKey: string;
   replyTargetId: string;
+  replyThreadId?: string | null;
+  replyMessageId?: string | null;
   text: string;
 }
 
@@ -64,7 +67,10 @@ export async function checkChannelSenderAccess(
     channelId: input.channelId,
     senderId: input.senderId,
     senderName: input.senderName,
+    conversationKey: input.conversationKey,
     replyTargetId: input.replyTargetId,
+    replyThreadId: input.replyThreadId ?? null,
+    replyMessageId: input.replyMessageId ?? null,
     text: input.text,
     createdAt: nowIso(),
   });

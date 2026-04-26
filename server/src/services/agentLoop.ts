@@ -45,6 +45,11 @@ export interface AgentLoopOptions {
   autoApproveTools?: boolean;
   /** When false, omit the trailing tool recap tags from the final response. */
   includeToolTags?: boolean;
+  permissionController?: {
+    check(params: { skillName: string; capability: string }): "allow" | "prompt" | "deny";
+    onPrompt?(params: { skillName: string; capability: string }): void | Promise<void>;
+    onConsume?(params: { skillName: string; capability: string }): void;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +228,7 @@ export async function* runAgentStream(
     skillContext = {},
     autoApproveTools = false,
     includeToolTags = true,
+    permissionController,
   } = options;
 
   // Work on a mutable copy so we can append tool messages each turn
@@ -332,11 +338,24 @@ export async function* runAgentStream(
       // ── Permission check ──────────────────────────────────────────────────
       const convId =
         typeof skillContext.conversationId === "string" ? skillContext.conversationId : null;
-      if (
-        !autoApproveTools &&
-        !isSkillAllowed({ skillName: toolCall.name, agentMode: mode, conversationId: convId })
-      ) {
-        const capability = getSkillCapability(toolCall.name);
+      const capability = getSkillCapability(toolCall.name);
+      const permissionState =
+        capability === "safe"
+          ? "allow"
+          : autoApproveTools
+            ? "allow"
+            : permissionController
+              ? permissionController.check({ skillName: toolCall.name, capability })
+              : isSkillAllowed({
+                    skillName: toolCall.name,
+                    agentMode: mode,
+                    conversationId: convId,
+                  })
+                ? "allow"
+                : "prompt";
+
+      if (permissionState === "prompt") {
+        await permissionController?.onPrompt?.({ skillName: toolCall.name, capability });
         yield {
           permissionRequired: { skillName: toolCall.name, capability, conversationId: convId! },
         };
@@ -348,6 +367,19 @@ export async function* runAgentStream(
         });
         earlyExit = true;
         break;
+      }
+
+      if (permissionState === "deny") {
+        messages.push({
+          role: "tool",
+          content: JSON.stringify({
+            permissionDenied: true,
+            capability,
+            message: `Permission denied for ${capability} in this channel chat.`,
+          }),
+          toolCallId: toolCall.id,
+        });
+        continue;
       }
 
       let result: unknown;
@@ -365,6 +397,7 @@ export async function* runAgentStream(
       if (convId) {
         consumeOnceGrant(convId, getSkillCapability(toolCall.name));
       }
+      permissionController?.onConsume?.({ skillName: toolCall.name, capability });
       logToolCall({
         conversationId:
           typeof skillContext.conversationId === "string" ? skillContext.conversationId : null,
