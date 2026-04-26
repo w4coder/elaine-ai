@@ -252,11 +252,11 @@ irm https://raw.githubusercontent.com/w4coder/elaine-ai/main/install.ps1 | iex
 
 After install, all state lives under the stable home directory:
 
-| Path                                        | Contents                                 |
-| ------------------------------------------- | ---------------------------------------- |
-| `<ELAINE_HOME>/server/data/elaine.db`       | SQLite DB — chats, memory, settings      |
-| `<ELAINE_HOME>/server/data/setup-hint.json` | First-boot provider hint (auto-deleted)  |
-| `<ELAINE_HOME>/.env`                        | Optional environment overrides           |
+| Path                                        | Contents                                |
+| ------------------------------------------- | --------------------------------------- |
+| `<ELAINE_HOME>/server/data/elaine.db`       | SQLite DB — chats, memory, settings     |
+| `<ELAINE_HOME>/server/data/setup-hint.json` | First-boot provider hint (auto-deleted) |
+| `<ELAINE_HOME>/.env`                        | Optional environment overrides          |
 
 To wipe everything, delete `<ELAINE_HOME>` and re-run `npx -y github:w4coder/elaine-ai`.
 

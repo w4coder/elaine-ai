@@ -31,6 +31,16 @@ export default tseslint.config(
     },
   },
 
+  // ── Top-level scripts (install wizard etc.) — Node.js environment ───────
+  {
+    files: ["scripts/**/*.{js,mjs,cjs}"],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
+
   // ── Client — Browser environment + React hooks ───────────────────────────
   {
     files: ["client/src/**/*.{ts,tsx}"],
