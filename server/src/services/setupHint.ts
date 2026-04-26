@@ -1,12 +1,7 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { getProjectRoot } from "../db/database.js";
-import {
-  getSettings,
-  saveSettings,
-  listUserModels,
-  createUserModel,
-} from "../db/repository.js";
+import { getSettings, saveSettings, listUserModels, createUserModel } from "../db/repository.js";
 
 interface SetupHint {
   provider: "ollama" | "vllm";
@@ -19,7 +14,10 @@ interface SetupHint {
  * the matching provider profile + default model on first boot. The hint file is
  * removed once consumed so this only runs once per install.
  */
-export function applySetupHint(log: { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void }): void {
+export function applySetupHint(log: {
+  info: (...a: unknown[]) => void;
+  warn: (...a: unknown[]) => void;
+}): void {
   const hintPath = resolve(getProjectRoot(), "server", "data", "setup-hint.json");
   if (!existsSync(hintPath)) return;
 
@@ -43,7 +41,12 @@ export function applySetupHint(log: { info: (...a: unknown[]) => void; warn: (..
   const model = hint.model?.trim() || profile.defaultModel;
   const updatedProfiles = settings.profiles.map((p) =>
     p.id === targetProfileId
-      ? { ...p, enabled: true, defaultModel: model || p.defaultModel, titleModel: model || p.titleModel }
+      ? {
+          ...p,
+          enabled: true,
+          defaultModel: model || p.defaultModel,
+          titleModel: model || p.titleModel,
+        }
       : p
   );
 
